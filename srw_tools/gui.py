@@ -409,71 +409,7 @@ def list_visualizers_by_group():
     return {g: sorted(names) for g, names in groups.items()}
 
 
-def list_simulation_scripts(base_dir=None):
-    """Recursively enumerate python files under base_dir looking for simulation
-    scripts.
-
-    A file is considered a simulation script if it contains a function named
-    `set_optics` and a top-level variable `varParam` which is a list of
-    list/tuple entries. Each entry is expected to be a sequence where the
-    first element is the parameter key (string) and the third element is its
-    value. We look for an entry where the first element is the string
-    'name' and treat its third element as the human script name.
-
-    Returns a dict mapping script_name -> absolute_path (strings).
-    """
-    import ast
-    from pathlib import Path
-
-    base = Path(base_dir or '.')
-    results = {}
-
-    for p in base.rglob('*.py'):
-        try:
-            text = p.read_text(encoding='utf-8')
-        except Exception:
-            continue
-
-        try:
-            mod = ast.parse(text)
-        except Exception:
-            continue
-
-        # require a set_optics function to be defined
-        has_set_optics = any(isinstance(n, ast.FunctionDef) and n.name == 'set_optics' for n in mod.body)
-        if not has_set_optics:
-            continue
-
-        # find assignments to varParam
-        name_val = None
-        for node in mod.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == 'varParam':
-                        lst = node.value
-                        if not isinstance(lst, ast.List):
-                            continue
-                        for elt in lst.elts:
-                            if isinstance(elt, (ast.List, ast.Tuple)) and len(elt.elts) >= 3:
-                                # evaluate first and third if constants
-                                first = elt.elts[0]
-                                third = elt.elts[2]
-                                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                                    if first.value == 'name' and isinstance(third, ast.Constant):
-                                        name_val = third.value
-                                        break
-                        if name_val:
-                            break
-            if name_val:
-                break
-
-        if name_val:
-            try:
-                results[str(name_val)] = str(p.resolve())
-            except Exception:
-                results[str(name_val)] = str(p)
-
-    return results
+from .simulation_scripts import script_manager
 
 
 def classify_visualizer_output(out):
@@ -853,7 +789,7 @@ def build_frame(parent):
             if p.get('type') == 'simulation':
                 # provide a selection of available simulation scripts
                 try:
-                    sims = list_simulation_scripts()
+                        sims = script_manager.list_simulation_scripts()
                 except Exception:
                     sims = {}
 
@@ -1111,7 +1047,7 @@ def build_frame(parent):
                     elif ptype == 'simulation':
                         # OptionMenu of discovered simulation scripts
                         try:
-                            sims = list_simulation_scripts()
+                            sims = script_manager.list_simulation_scripts()
                         except Exception:
                             sims = {}
 

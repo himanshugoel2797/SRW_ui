@@ -3,7 +3,7 @@ import tempfile
 import os
 from pathlib import Path
 
-from srw_tools.gui import list_simulation_scripts
+from srw_tools.simulation_scripts import script_manager, SimulationScriptManager
 
 
 def write_file(p, contents):
@@ -39,7 +39,9 @@ varParam = [
 ]
 """)
 
-            results = list_simulation_scripts(td)
+            # Use the singleton manager directly
+            results = script_manager.list_simulation_scripts(td, use_cache=False)
+            self.assertIsInstance(script_manager, SimulationScriptManager)
             self.assertIn('My Script', results)
             self.assertIn('OtherScript', results)
             self.assertTrue(results['My Script'].endswith('sim1.py'))
@@ -52,7 +54,7 @@ varParam = [
 # no set_optics here
 varParam = [['name','x','Ignored']]
 """)
-            results = list_simulation_scripts(td)
+            results = script_manager.list_simulation_scripts(td, use_cache=False)
             self.assertEqual(results, {})
 
     def test_handles_non_string_third_values(self):
@@ -64,7 +66,7 @@ def set_optics():
 
 varParam = [['name', 'x', 42]]
 """)
-            results = list_simulation_scripts(td)
+            results = script_manager.list_simulation_scripts(td, use_cache=False)
             # third element is int -> should be found as stringified key '42'
             self.assertIn('42', results)
 

@@ -28,7 +28,7 @@ class CoherentModeVisualizer(Visualizer):
         ]
 
     def view(self, data=None):
-        """Display the grid as an image when running in a GUI, otherwise return data."""
+        """Display the grid as an image when running in a GUI."""
         output = self.process(data)
 
         # Use the MatplotlibEmbed helper for consistent embedding
@@ -36,6 +36,21 @@ class CoherentModeVisualizer(Visualizer):
             from ..gui_helpers import MatplotlibEmbed
         except Exception:
             return output
+
+        if data is None:
+            return False
+        
+        filename = data.get('file', None)
+        simulation = data.get('simulation', None)
+        if not filename or not simulation:
+            return False
+        
+        if not filename and simulation:
+            # Get the CM filename from the simulation script
+            pass
+
+        #if filename:
+        #    # Load the CMs from this h5 file
 
         def draw(ax):
             ax.imshow(output['grid'], cmap='gray')

@@ -2,7 +2,8 @@ import unittest
 import tkinter as tk
 
 from srw_tools.visualizer import register_visualizer, _REGISTRY
-from srw_tools.gui import build_frame, list_simulation_scripts
+from srw_tools.gui import build_frame
+from srw_tools.simulation_scripts import script_manager
 
 
 class InlineParamsTests(unittest.TestCase):
@@ -21,15 +22,15 @@ class InlineParamsTests(unittest.TestCase):
 
     def test_inline_params_and_callback_use_values(self):
         # prepare a stable simulation list
-        orig = list_simulation_scripts
+        orig = script_manager.list_simulation_scripts
 
         def fake_sims():
             return {'S1': '/tmp/s1.py', 'S2': '/tmp/s2.py'}
 
         try:
-            # monkeypatch module function
+            # monkeypatch the singleton manager used by GUI
             import srw_tools.gui as g
-            g.list_simulation_scripts = lambda base_dir=None: fake_sims()
+            g.script_manager.list_simulation_scripts = lambda base_dir=None: fake_sims()
 
             called = {}
 
@@ -137,7 +138,7 @@ class InlineParamsTests(unittest.TestCase):
         finally:
             # restore
             import srw_tools.gui as g
-            g.list_simulation_scripts = orig
+            g.script_manager.list_simulation_scripts = orig
 
 
 if __name__ == '__main__':
