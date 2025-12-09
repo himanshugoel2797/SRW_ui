@@ -3,7 +3,7 @@ import threading
 import time
 import xmlrpc.client
 
-from srw_tools.visualizer import register_visualizer, _REGISTRY
+from srw_tools.visualizer import register_visualizer, _REGISTRY, Visualizer
 from srw_tools.gui import make_visualizer_buttons
 from srw_tools.rpc_server import RPCServer
 
@@ -12,18 +12,16 @@ class ParamsAndRPCTests(unittest.TestCase):
     def test_make_visualizer_buttons_passes_params_to_process(self):
         called = {'params': None}
 
-        class TempParamVis:
+        class TempParamVis(Visualizer):
             name = 'temp_param'
 
-            def __init__(self, config=None):
-                pass
-
-            def process(self, data=None):
+            def local_process(self, data=None):
                 called['params'] = data
                 return {'ok': True, 'received': data}
 
-            def view(self, parent=None, data=None):
-                return data
+            def view(self, data=None):
+                # GUI provides the parameter dict; visualizer decides to process it
+                return self.local_process(data)
 
         register_visualizer(TempParamVis)
         try:
@@ -40,7 +38,9 @@ class ParamsAndRPCTests(unittest.TestCase):
             self.assertIn('temp_param', created)
             rv = created['temp_param']()
             self.assertEqual(called['params'], {'a': 1, 'b': 2})
-            self.assertEqual(rv, {'ok': True, 'received': {'a': 1, 'b': 2}})
+            # GUI launches view() and visualizers manage their own output, so
+            # we don't expect the callback to return processed data.
+            self.assertIsNone(rv)
         finally:
             _REGISTRY.pop('temp_param', None)
 
@@ -53,7 +53,7 @@ class ParamsAndRPCTests(unittest.TestCase):
         time.sleep(0.05)
 
         host, port = server.server.server_address
-        proxy = xmlrpc.client.ServerProxy(f'http://{host}:{port}/')
+        proxy = xmlrpc.client.ServerProxy(f'http://{host}:{port}/RPC2')
 
         # ensure a visualizer exists on the server (sine is present)
         # Use get_params to pass amplitude
@@ -73,11 +73,17 @@ class ParamsAndRPCTests(unittest.TestCase):
 
         # Sine visualizer should be present (registered in package), call it.
         self.assertIn('sine', created)
-        out = created['sine']()
-        # server process_visualizer returns numeric dict with x/y keys
-        self.assertIsInstance(out, dict)
-        self.assertIn('x', out)
-        self.assertIn('y', out)
+        rv = created['sine']()
+        # GUI launched the visualizer's view; it manages its own rendering and
+        # the GUI does not return processed data here.
+        self.assertIsNone(rv)
+
+        # The server side processing still works — call the RPC directly to
+        # verify server processing returns the expected numeric structure.
+        res = proxy.process_visualizer('sine', {'amplitude': 3.0})
+        self.assertIsInstance(res, dict)
+        self.assertIn('x', res)
+        self.assertIn('y', res)
 
         # shutdown is not exposed but thread is daemon; cleaning up by finishing test
 

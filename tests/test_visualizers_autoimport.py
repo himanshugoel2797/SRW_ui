@@ -10,7 +10,7 @@ class VisualizersAutoImportTests(unittest.TestCase):
     def test_run_square_visualizer(self):
         cls = get_visualizer('square')
         inst = cls()
-        out = inst.run({'size': 3})
+        out = inst.process({'size': 3})
         self.assertIn('grid', out)
 
 

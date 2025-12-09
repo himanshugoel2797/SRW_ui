@@ -5,13 +5,13 @@ matplotlib is not available; when matplotlib is present the GUI can
 optionally render a plot via the GUI's richer output.
 """
 from ..visualizer import Visualizer, register_visualizer
-
+import tkinter as tk
 
 @register_visualizer
 class SineVisualizer(Visualizer):
     name = 'sine'
 
-    def process(self, data=None):
+    def local_process(self, data=None):
         try:
             import numpy as np
         except Exception:
@@ -35,15 +35,12 @@ class SineVisualizer(Visualizer):
             {'name': 'amplitude', 'type': 'float', 'default': 1.0, 'label': 'Amplitude'},
         ]
 
-    def view(self, parent=None, data=None):
-        """Open a simple matplotlib window attached to the given parent.
+    def view(self, data=None):
+        """Open a simple matplotlib window (if matplotlib is available).
 
-        If parent is None, behave like process() and just return the data.
+        When called without a GUI context, simply return processed data.
         """
         output = self.process(data)
-        # try to render if a parent is provided and matplotlib is available
-        if parent is None:
-            return output
 
         # Use the MatplotlibEmbed helper so embedding logic is shared
         try:
@@ -55,7 +52,10 @@ class SineVisualizer(Visualizer):
         def draw(ax):
             ax.plot(output['x'], output['y'])
             ax.set_title(self.name)
-
-        emb = MatplotlibEmbed(parent=parent, figsize=(5, 3))
+            
+        win = tk.Toplevel()
+        win.title(self.name)
+        emb = MatplotlibEmbed(parent=win, figsize=(5, 3))
         emb.create_figure(draw)
+
         return True

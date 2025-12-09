@@ -4,11 +4,12 @@ It registers a tiny visualizer called 'square' so tests can confirm
 auto-loading works.
 """
 from ..visualizer import Visualizer, register_visualizer
-import tkinter as tk
+
 
 @register_visualizer
-class SquareVisualizer(Visualizer):
-    name = 'square'
+class CoherentModeVisualizer(Visualizer):
+    name = 'coherent_mode_viewer'
+    group = 'Coherent Modes'
 
     def local_process(self, data=None):
         # produce a simple numeric grid rather than requiring external deps
@@ -18,7 +19,12 @@ class SquareVisualizer(Visualizer):
 
     def parameters(self):
         return [
-            {'name': 'size', 'type': 'int', 'default': 4, 'label': 'Grid size'},
+            {'name': 'file', 'type': 'file', 'default': '', 'label': 'File'},
+            {'name': 'simulation', 'type': 'simulation', 'default': '', 'label': 'Simulation'},
+            {'name': 'break1', 'type': 'newline', 'label': ''},
+            {'name': 'Base CM index', 'type': 'int', 'default': 0, 'label': 'Base CM index'},
+            {'name': 'break2', 'type': 'newline', 'label': ''},
+            {'name': 'Number of CMs', 'type': 'int', 'default': 1, 'label': 'Number of CMs'},
         ]
 
     def view(self, data=None):
@@ -35,9 +41,6 @@ class SquareVisualizer(Visualizer):
             ax.imshow(output['grid'], cmap='gray')
             ax.set_title(self.name)
 
-        win = tk.Toplevel()
-        win.title(self.name)
-
-        emb = MatplotlibEmbed(parent=win, figsize=(4, 4))
+        emb = MatplotlibEmbed(figsize=(4, 4))
         emb.create_figure(draw)
         return True
