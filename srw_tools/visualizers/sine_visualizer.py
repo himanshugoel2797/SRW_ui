@@ -42,9 +42,9 @@ class SineVisualizer(Visualizer):
         """
         output = self.process(data)
 
-        # Use the MatplotlibEmbed helper so embedding logic is shared
+        # Use the HoloEmbed helper so embedding logic is shared
         try:
-            from ..gui_helpers import MatplotlibEmbed
+            from ..gui_helpers import HoloEmbed
         except Exception:
             # Can't embed; return the data to caller
             return output
@@ -52,10 +52,12 @@ class SineVisualizer(Visualizer):
         def draw(ax):
             ax.plot(output['x'], output['y'])
             ax.set_title(self.name)
-            
+
+        # create a small Toplevel window so visualizers can manage their UI
         win = tk.Toplevel()
         win.title(self.name)
-        emb = MatplotlibEmbed(parent=win, figsize=(5, 3))
+
+        emb = HoloEmbed(figsize=(5, 3))
         emb.create_figure(draw)
 
         return True

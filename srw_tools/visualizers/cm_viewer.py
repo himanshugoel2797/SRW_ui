@@ -31,9 +31,9 @@ class CoherentModeVisualizer(Visualizer):
         """Display the grid as an image when running in a GUI."""
         output = self.process(data)
 
-        # Use the MatplotlibEmbed helper for consistent embedding
+        # Use the HoloEmbed helper for consistent embedding
         try:
-            from ..gui_helpers import MatplotlibEmbed
+            from ..gui_helpers import HoloEmbed
         except Exception:
             return output
 
@@ -56,6 +56,6 @@ class CoherentModeVisualizer(Visualizer):
             ax.imshow(output['grid'], cmap='gray')
             ax.set_title(self.name)
 
-        emb = MatplotlibEmbed(figsize=(4, 4))
+        emb = HoloEmbed(figsize=(4, 4))
         emb.create_figure(draw)
         return True

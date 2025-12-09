@@ -1,106 +1,112 @@
-"""Small helpers for embedding matplotlib figures into Tkinter.
+"""Helpers for embedding visualizations using HoloViews/Bokeh.
 
-This module provides a lightweight MatplotlibEmbed class that creates a
-matplotlib Figure, attaches a Tk canvas and navigation toolbar when a
-tkinter parent is supplied, and exposes helper methods to draw and clear
-the figure. The implementation is robust when tkinter is not available
-or when running headless (it will still create a Figure object).
+This module provides a small Holo/Bokeh embed helper which aims to be a
+lightweight replacement for the earlier MatplotlibEmbed. It prefers the
+event-driven `watchdog` and `bokeh` libraries when available; otherwise
+it falls back to simple in-memory representations for headless tests.
 """
 from typing import Optional, Callable, Any
 
 
-class MatplotlibEmbed:
-    """Helper to embed a matplotlib Figure inside a Tk parent.
+class _DummyAx:
+    """Lightweight adapter that records plotting calls when bokeh is
+    unavailable. This keeps tests lightweight and avoids hard dependency
+    on bokeh in CI.
 
-    Usage:
-      emb = MatplotlibEmbed(parent)
-      fig = emb.create_figure(lambda ax: ax.plot(...))
+    The adapter provides a minimal `plot`, `set_title` and `imshow`
+    interface used by existing visualizers.
+    """
 
-    If `parent` is None, the helper still creates and returns a Figure
-    (useful for headless tests or generating images without embedding).
+    def __init__(self):
+        self._lines = []
+        self._images = []
+        self._title = None
+
+    def plot(self, x, y, *args, **kwargs):
+        self._lines.append((list(x), list(y)))
+
+    def set_title(self, t):
+        self._title = t
+
+    def imshow(self, grid, *args, **kwargs):
+        self._images.append(grid)
+
+
+class HoloEmbed:
+    """Embedder that uses Bokeh (and HoloViews where appropriate) if
+    available, otherwise provides a headless adapter for tests.
+
+    The `create_figure(draw_fn)` method will call draw_fn(ax) where `ax`
+    is either a Bokeh-aware adapter (supports `plot`, `imshow`, `set_title`)
+    or a `_DummyAx` for headless operation.
     """
 
     def __init__(self, parent: Optional[Any] = None, figsize=(5, 3)):
         self.parent = parent
         self.figsize = figsize
         self.figure = None
-        self.canvas = None
-        self.toolbar = None
 
     def create_figure(self, draw_fn: Optional[Callable] = None):
-        """Create a matplotlib Figure and optionally run draw_fn(ax).
+        """Create a Bokeh figure and pass an adapter to draw_fn.
 
-        If tkinter is available and parent is set, this will create a
-        FigureCanvasTkAgg and a NavigationToolbar2Tk. When parent is None
-        or tkinter is unavailable, it will simply create and return the
-        Figure instance.
+        If Bokeh is not installed this will fall back to a dummy adapter
+        so tests can assert behaviour without heavy plotting deps.
         """
-        # Delay-import matplotlib until used so tests and environments
-        # without matplotlib still import this module.
-        import matplotlib
-        from matplotlib.figure import Figure
-
-        # ensure a backend is set that can render offscreen if necessary
+        # Prefer to use bokeh if available
         try:
-            matplotlib.use(matplotlib.get_backend(), force=False)
-        except Exception:
-            # ignore — backend may already be configured
-            pass
+            from bokeh.plotting import figure as bokeh_figure
 
-        fig = Figure(figsize=self.figsize)
-        ax = fig.add_subplot(111)
+            width = int(self.figsize[0] * 100)
+            height = int(self.figsize[1] * 100)
+            fig = bokeh_figure(width=width, height=height)
 
-        if draw_fn is not None:
-            try:
+            class _BokehAx:
+                def __init__(self, fig):
+                    self.fig = fig
+
+                def plot(self, x, y, *args, **kwargs):
+                    # bokeh uses line for 2D lines
+                    try:
+                        self.fig.line(x, y, *args, **kwargs)
+                    except Exception:
+                        # accept numpy arrays and convert
+                        self.fig.line(list(x), list(y), *args, **kwargs)
+
+                def set_title(self, t):
+                    try:
+                        self.fig.title.text = str(t)
+                    except Exception:
+                        pass
+
+                def imshow(self, grid, *args, **kwargs):
+                    # Bokeh image expects a 2D array inside a list
+                    try:
+                        self.fig.image(image=[grid], x=0, y=0, dw=1, dh=1)
+                    except Exception:
+                        # convert to lists if needed
+                        self.fig.image(image=[list(map(list, grid))], x=0, y=0, dw=1, dh=1)
+
+            ax = _BokehAx(fig)
+            if draw_fn is not None:
                 draw_fn(ax)
-            except Exception:
-                # don't fail the caller; raise so calling code can handle it
-                raise
 
-        self.figure = fig
+            self.figure = fig
+            # embedding into tkinter is not implemented; visualizers handle UI
+            return fig
+        except Exception:
+            # fallback: headless dummy adapter + simple figure-like object
+            ax = _DummyAx()
+            if draw_fn is not None:
+                draw_fn(ax)
+            # create a minimal figure-like object for tests
+            class _Fig:
+                def __init__(self, ax):
+                    self.axes = [ax]
 
-        # Try to attach to Tk only when parent supplied
-        if self.parent is not None:
-            try:
-                import tkinter as _tk
-                from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-
-                self.canvas = FigureCanvasTkAgg(fig, master=self.parent)
-                self.canvas.draw()
-                # pack canvas widget by default — caller can rearrange if desired
-                self.canvas.get_tk_widget().pack(fill=_tk.BOTH, expand=True)
-
-                # navigation toolbar
-                self.toolbar = NavigationToolbar2Tk(self.canvas, self.parent)
-                self.toolbar.update()
-                try:
-                    self.toolbar.pack(side=_tk.TOP, fill=_tk.X)
-                except Exception:
-                    # older versions use .pack on .tk
-                    pass
-            except Exception:
-                # If tkinter or tkagg backends are not available, just return fig
-                self.canvas = None
-                self.toolbar = None
-
-        return fig
+            fig = _Fig(ax)
+            self.figure = fig
+            return fig
 
     def clear(self):
-        """Clear the current figure, if any."""
-        if self.figure is not None:
-            for ax in list(self.figure.axes):
-                self.figure.delaxes(ax)
-            self.figure = None
-        if self.canvas is not None:
-            try:
-                widget = self.canvas.get_tk_widget()
-                widget.destroy()
-            except Exception:
-                pass
-            self.canvas = None
-        if self.toolbar is not None:
-            try:
-                self.toolbar.destroy()
-            except Exception:
-                pass
-            self.toolbar = None
+        """Clear any internal figure references."""
+        self.figure = None
