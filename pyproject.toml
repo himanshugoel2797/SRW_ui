@@ -24,6 +24,7 @@ dev = ["pytest"]
 
 [project.scripts]
 srw-cli = "srw_tools.cli:main"
+srw-gui = "srw_tools.gui:run_gui"
 
 [tool.setuptools]
 # include the package so editable installs work

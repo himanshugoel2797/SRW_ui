@@ -35,6 +35,9 @@ class RPCServer:
         self.server.register_function(self.list_files)
         self.server.register_function(self.read_file)
         self.server.register_function(self.write_file)
+        # register visualizer processing helper so remote clients can ask the
+        # server to run a visualizer's process() on the server-side.
+        self.server.register_function(self.process_visualizer)
 
     def _is_allowed_path(self, path: str) -> bool:
         """Check the absolute path is inside one of allowed_dirs or allow all if None."""
@@ -75,3 +78,19 @@ class RPCServer:
     def serve_forever(self):
         print(f"Starting RPC server on {self.server.server_address}")
         self.server.serve_forever()
+
+    def process_visualizer(self, name: str, params: dict):
+        """Run a visualizer's process(name, params) on the server and return the result.
+
+        This allows remote clients to request processed data from the server.
+        """
+        try:
+            # avoid importing heavy modules at top-level
+            from srw_tools.visualizer import get_visualizer
+
+            cls = get_visualizer(name)
+            inst = cls()
+            return inst.process(params)
+        except Exception as e:
+            # XML-RPC will return a fault for exceptions; keep the error simple
+            raise

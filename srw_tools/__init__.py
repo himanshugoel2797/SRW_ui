@@ -5,13 +5,11 @@ simulation workflows: an RPC server, simple git helpers, and a visualizer
 base class. Keep it tiny and dependency-free.
 """
 
-__all__ = ["rpc_server", "git_helper", "visualizer"]
+__all__ = ["rpc_server", "git_helper", "visualizer", "cli", "gui"]
 
-# try to import example visualizers (optional) so they register automatically
+# Import the visualizers package so drop-in visualizer modules register on
+# package import (keep resilient to missing optional deps by ignoring errors).
 try:
-	# keep this import optional and resilient to missing optional deps
-	from . import examples  # type: ignore
-	# import common visualizers directory so files placed there register
 	from . import visualizers  # type: ignore
 except Exception:
 	pass

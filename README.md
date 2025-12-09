@@ -64,3 +64,32 @@ To restrict file access to a specific folder, pass --dir:
 ```bash
 python -m srw_tools.cli start-rpc --host 127.0.0.1 --port 8000 --dir path/to/allowed/folder
 ```
+
+GUI
+ - Run the Tkinter-based GUI which shows a button for every registered visualizer:
+
+```bash
+python -m srw_tools.cli
+```
+or, if installed via the package entry point (srw-cli), run:
+
+```bash
+srw-cli
+```
+
+Richer GUI output
+ - The GUI now renders visualizer outputs more helpfully: when a visualizer
+	 returns numeric data with 'x' and 'y' keys, the GUI will show an embedded
+	 matplotlib plot (if matplotlib is installed). When a visualizer returns a
+	 2D numeric grid (key 'grid' or a 2D list/array) the GUI displays it with
+	 imshow. Other outputs are shown in a small text viewer.
+
+Parameters & remote processing
+ - Visualizers can expose a `parameters()` schema — the GUI will prompt you
+	 for parameter values before running a visualizer. Parameters are simple
+	 typed fields: int, float, str, or bool.
+ - The GUI also allows registering RPC servers (XML-RPC). When a server
+	 is selected the visualizer's `process()` call will be performed on the
+	 remote server (via `process_visualizer(name, params)`), and the result
+	 will be handed to `view()` for display locally. This makes it easy to
+	 present data produced remotely without reimplementing UI code.
