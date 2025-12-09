@@ -1,3 +1,25 @@
+SSH / Launch remote servers from GUI
+ - The GUI stores a persistent list of registered servers in your home
+	 directory (file: ~/.srw_ui_servers.json).
+ - When a server is selected you can enter a path and a conda environment
+	 name and press "Connect via SSH". If `asyncssh` is installed the GUI
+	 will attempt to SSH into the host, cd to the provided path, run the
+	 command to start the RPC server inside the specified conda environment,
+	 and set up a local port forward so the GUI connects to the remote server
+	 transparently.
+ - Connection details are saved so you can re-connect quickly later. Note
+	 that launching remote servers depends on `asyncssh` and the remote host
+	 having the requested conda environment and the Python package installed.
+
+Parameters & remote processing
+ - Visualizers can expose a `parameters()` schema — the GUI will prompt you
+	 for parameter values before running a visualizer. Parameters are simple
+	 typed fields: int, float, str, or bool.
+ - The GUI also allows registering RPC servers (XML-RPC). When a server
+	 is selected the visualizer's `process()` call will be performed on the
+	 remote server (via `process_visualizer(name, params)`), and the result
+	 will be handed to `view()` for display locally. This makes it easy to
+	 present data produced remotely without reimplementing UI code.
 # SRW UI tools (lightweight)
 
 This repository implements a small, easy-to-maintain set of utilities for

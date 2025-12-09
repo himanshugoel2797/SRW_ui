@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Run SRW GUI (module)",
+            "type": "python",
+            "request": "launch",
+            "module": "srw_tools.gui",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "description": "Launch the Tkinter-based GUI by running `python -m srw_tools.gui`. Useful to debug GUI event handlers and server integration."
+        },
+        {
+            "name": "Python: Run SRW CLI (start GUI)",
+            "type": "python",
+            "request": "launch",
+            "module": "srw_tools.cli",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "description": "Run the packaged CLI entry which also starts the GUI (if invoked without args). Useful if you'd like the CLI wiring to be part of the debug session."
+        }
+    ]
+}

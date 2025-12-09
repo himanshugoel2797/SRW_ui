@@ -17,6 +17,7 @@ dependencies = [
   "scikit-image",
   "matplotlib",
   "srwpy",
+  "asyncssh",
 ]
 
 [project.optional-dependencies]
