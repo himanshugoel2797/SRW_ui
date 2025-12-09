@@ -1,0 +1,10 @@
+# Primary scientific dependencies commonly used with SRW workflows.
+# Keep versions flexible for a personal tool; pin if you need reproducibility.
+numpy
+scipy
+scikit-image
+matplotlib
+srwpy
+
+# Optional / useful tools
+pytest

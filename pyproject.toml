@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "srw-ui"
+version = "0.1.0"
+description = "Lightweight SRW simulation visualization tools"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [ { name = "You", email = "you@example.com" } ]
+keywords = ["srw", "visualization", "sim" ]
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "scikit-image",
+  "matplotlib",
+  "srwpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+srw-cli = "srw_tools.cli:main"
+
+[tool.setuptools]
+# include the package so editable installs work
+packages = ["srw_tools"]
