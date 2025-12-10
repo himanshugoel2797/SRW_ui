@@ -26,50 +26,43 @@ class Visualizer:
 
     # Visualizers should implement `local_process` for data processing
     # and `view` for UI behaviour. The public `process` method handles
-    # transparent RPC delegation and then calls the local implementation.
+    # optional remote execution and then calls the local implementation.
 
     def process(self, data=None):
         """Process or generate visualization data.
 
-        This method handles transparent RPC delegation. Subclasses should
-        implement `local_process` instead of overriding this method.
+        This method supports optional remote execution when a `server`
+        dict with an active SSH connection (`_conn`) and `remote_cmd` is
+        attached to the visualizer instance. Otherwise it calls
+        `local_process` implemented by subclasses.
         """
         # If a server connection is attached to the instance, try to request
-        # processed data transparently from the server. The expected server
-        # API is `process_visualizer(name, params)` (XML-RPC friendly types).
+        # Attempt SSH-based remote execution if a server dict with an
+        # active connection is attached. Callers may set `server` to a
+        # dict containing an active connection under the `_conn` key and
+        # a `remote_cmd` template string. The template may include
+        # `{name}` and `{params}` which will be filled with the visualizer
+        # name and JSON-encoded params respectively.
         server = getattr(self, 'server', None)
-        # Support `server` being either a dict containing 'local_proxy'
-        # and callback metadata (as used by the GUI) or an xmlrpc proxy.
         if isinstance(server, dict):
-            try:
-                import xmlrpc.client
-                server_info = server
-                local_proxy = server_info.get('local_proxy') or server_info.get('client_url')
-                if local_proxy:
-                    server = xmlrpc.client.ServerProxy(local_proxy)
-                    # cache proxy for subsequent calls
-                    self.server = server
-                # expose callback info to this visualizer instance
-                self.client_url = server_info.get('callback_url')
-                self.client_id = server_info.get('callback_id')
-            except Exception:
-                pass
-        if server is not None:
-            try:
-                # If a client_url or client_id was configured on this instance, pass it to
-                # the server so the server can perform callback notifications.
-                client_url = getattr(self, 'client_url', None)
-                client_id = getattr(self, 'client_id', None)
-                if client_url is not None:
-                    return server.process_visualizer(self.name, data or {}, client_url)
-                if client_id is not None:
-                    # XML-RPC doesn't support keyword args, pass None for client_url
-                    return server.process_visualizer(self.name, data or {}, None, client_id)
-                # default / backward compatible
-                return server.process_visualizer(self.name, data or {})
-            except Exception:
-                # fall back to local processing on error
-                pass
+            conn = server.get('_conn')
+            remote_cmd = server.get('remote_cmd')
+            if conn and remote_cmd:
+                try:
+                    import json
+                    from .ssh_helper import run_command
+                    payload = json.dumps(data or {})
+                    cmd = remote_cmd.format(name=self.name, params=payload)
+                    status, out, err = run_command(conn, cmd)
+                    if status == 0:
+                        try:
+                            return json.loads(out)
+                        except Exception:
+                            # if remote command printed raw data, return stdout
+                            return out
+                    # on failure fall back to local
+                except Exception:
+                    pass
 
         return self.local_process(data)
 
@@ -77,8 +70,8 @@ class Visualizer:
         """Process or generate visualization data (local implementation).
 
         Subclasses must implement this method to provide local processing
-        logic. The base `process` handles any RPC delegation and then calls
-        into this method when running locally.
+        logic. The base `process` will call this when remote execution is
+        not used or fails.
         """
         raise NotImplementedError()
 

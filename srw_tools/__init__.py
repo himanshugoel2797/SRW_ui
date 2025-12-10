@@ -1,11 +1,11 @@
 """SRW UI tools package
 
 This package contains small, maintainable utilities for running SRW
-simulation workflows: an RPC server, simple git helpers, and a visualizer
+simulation workflows: SSH helpers, simple git helpers, and a visualizer
 base class. Keep it tiny and dependency-free.
 """
 
-__all__ = ["rpc_server", "git_helper", "visualizer", "cli", "gui", "nativelib"]
+__all__ = ["ssh_helper", "git_helper", "visualizer", "cli", "gui", "nativelib"]
 
 # Import the visualizers package so drop-in visualizer modules register on
 # package import (keep resilient to missing optional deps by ignoring errors).

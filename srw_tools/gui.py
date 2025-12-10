@@ -12,7 +12,6 @@ from pathlib import Path
 import socket
 import threading
 import asyncio
-import xmlrpc.client
 
 SERVERS_FILE = Path.home() / '.srw_ui_servers.json'
 
@@ -68,71 +67,17 @@ def _find_free_local_port():
 
 
 def start_ssh_server(url: str, path: str, env: str):
-    """Attempt to SSH to the host in url, start a server at a free remote port,
-    forward it locally and return (local_port, remote_port, pid, conn, listener).
+    """Establish an SSH connection to the given url and return connection info.
 
-    This function is synchronous (blocks) and will use asyncio internally.
-    It requires `asyncssh` to be installed. Caller should run this in a
-    background thread to avoid blocking the GUI.
+    Returns a tuple `(local_port, remote_port, pid, conn, listener)` where
+    `conn` is an active connection object usable with `ssh_helper.run_command`.
     """
-    import asyncssh
+    from .ssh_helper import connect_sync
 
-    # Basic parsing of user@host:port
-    u = url
-    user = None
-    host = u
-    port = 22
-    if '@' in u:
-        user, host = u.split('@', 1)
-    if ':' in host:
-        h, p = host.rsplit(':', 1)
-        host = h
-        try:
-            port = int(p)
-        except Exception:
-            port = 22
-
-    async def _do_connect():
-        connect_params = {
-            'host': host,
-            'port': port,
-        }
-        if user:
-            connect_params['username'] = user
-        conn = await asyncssh.connect(**connect_params)
-
-        # pick a remote free port
-        proc = await conn.run("python -c 'import socket; s=socket.socket(); s.bind((\"127.0.0.1\",0)); print(s.getsockname()[1]); s.close()'", check=True)
-        remote_port = int(proc.stdout.strip())
-
-        # start server remotely and capture the PID of the backgrounded process
-        cmd = ""
-        if path:
-            cmd += f"cd {path} && "
-        if env:
-            cmd += f"conda run -n {env} "
-
-        cmd += f"python -m srw_tools.rpc_server --host 127.0.0.1 --port {remote_port} > /tmp/srw_server_{remote_port}.log 2>&1 & echo $!'"
-        proc = await conn.run(cmd, check=True)
-        try:
-            pid = int(proc.stdout.strip())
-        except Exception:
-            pid = None
-
-        local_port = _find_free_local_port()
-        listener = await conn.forward_local_port('127.0.0.1', local_port, '127.0.0.1', remote_port)
-
-        return local_port, remote_port, pid, conn, listener
-
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(_do_connect())
-    finally:
-        try:
-            asyncio.set_event_loop(None)
-        except Exception:
-            pass
+    # connect_sync will parse user@host:port itself
+    conn = connect_sync(url)
+    # We don't start any remote server by default; return conn for caller
+    return None, None, None, conn, None
 
 
 def stop_ssh_server(url: str, servers: dict):
@@ -158,9 +103,12 @@ def stop_ssh_server(url: str, servers: dict):
             # try kill by pid first
             if pid:
                 await conn.run(f'kill {pid}', check=False)
-            elif remote_port:
-                # fallback: try to kill by command name
-                await conn.run("pkill -f srw_tools.rpc_server", check=False)
+            elif pid:
+                # fallback: try to kill by pid if provided
+                try:
+                    await conn.run(f'kill {pid}', check=False)
+                except Exception:
+                    pass
 
             # close listener if present
             if listener and hasattr(listener, 'close'):
@@ -194,51 +142,32 @@ def stop_ssh_server(url: str, servers: dict):
 
 
 def view_remote_log(url: str, servers: dict):
-    """Return text of the remote server log or error message.
+    """Return the remote server log text via SSH.
 
-    Uses the active SSH connection if present, otherwise falls back to the
-    local_proxy (xmlrpc) read_file endpoint.
+    The server entry must include `_conn` (active SSH connection) and
+    `remote_log` (path to the log file on the remote host).
     """
     info = servers.get(url)
     if not info:
         return False, 'No server record'
-
-    remote_port = info.get('remote_port')
     conn = info.get('_conn')
-    local_proxy = info.get('local_proxy')
+    remote_log = info.get('remote_log')
 
-    if remote_port is None:
-        return False, 'No remote port known'
+    if conn is None:
+        return False, 'Not connected via SSH'
 
-    if conn is not None:
-        async def _do_read():
-            try:
-                proc = await conn.run(f'cat /tmp/srw_server_{remote_port}.log', check=False)
-                return True, proc.stdout
-            except Exception as e:
-                return False, str(e)
+    if not remote_log:
+        return False, 'No remote log path configured'
 
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(_do_read())
-        finally:
-            try:
-                asyncio.set_event_loop(None)
-            except Exception:
-                pass
-
-    if local_proxy:
-        try:
-            import xmlrpc.client
-
-            proxy = xmlrpc.client.ServerProxy(local_proxy)
-            content = proxy.read_file(f'/tmp/srw_server_{remote_port}.log')
-            return True, content
-        except Exception as e:
-            return False, str(e)
-
-    return False, 'No way to read remote logs'
+    # use ssh_helper for synchronous execution
+    try:
+        from .ssh_helper import run_command
+        status, out, err = run_command(conn, f"cat {remote_log}")
+        if status == 0:
+            return True, out
+        return False, err or 'Failed to read remote log'
+    except Exception as e:
+        return False, str(e)
 
 
 def connect_to_server(url: str, path: str, env: str, servers: dict):
@@ -259,16 +188,13 @@ def connect_to_server(url: str, path: str, env: str, servers: dict):
     # Attempt SSH start
     try:
         lp, remote_port, pid, conn, listener = start_ssh_server(url, path, env)
-        # create xmlrpc client pointing at forwarding
-        entry['local_proxy'] = f'http://127.0.0.1:{lp}/'
-        entry['remote_port'] = remote_port
+        # store connection info for later remote operations
         entry['pid'] = pid
         entry['_conn'] = conn
         entry['_listener'] = listener
-        # align client_url so visualizers will use the forwarded proxy
-        entry['client_url'] = entry['local_proxy']
+        entry['remote_host'] = url
         _save_servers(servers)
-        return True, f'Connected (localhost:{lp})', {'local_proxy': entry['local_proxy'], 'remote_port': remote_port, 'pid': pid}
+        return True, f'Connected via SSH to {url}', {'remote_host': url, 'pid': pid}
     except Exception as e:
         return False, str(e), None
 
@@ -306,8 +232,6 @@ def disconnect_ssh_server(url: str, servers: dict):
 
     info.pop('_conn', None)
     info.pop('_listener', None)
-    info.pop('local_proxy', None)
-    info.pop('client_url', None)
     _save_servers(servers)
     return True, 'disconnected'
 
@@ -582,16 +506,11 @@ def build_frame(parent):
         # If server already has a _conn (active ssh connection)
         connected = bool(entry.get('_conn'))
 
-        if isinstance(url, str) and (url.startswith('http://') or url.startswith('https://')):
-            connect_button.config(text='Use server', state='normal')
-            # we don't manage remote process for plain HTTP entries
-            stop_button.config(state='disabled')
-            # only allow disconnect if we've added a local_proxy ourselves
-            disconnect_button.config(state='normal' if entry.get('local_proxy') else 'disabled')
-        else:
-            connect_button.config(text='Connect via SSH', state='normal')
-            stop_button.config(state='normal' if connected else 'disabled')
-            disconnect_button.config(state='normal' if connected else 'disabled')
+        # Only SSH-style targets are supported now. Enable buttons based on
+        # whether we have an active SSH connection stored on the entry.
+        connect_button.config(text='Connect via SSH', state='normal')
+        stop_button.config(state='normal' if connected else 'disabled')
+        disconnect_button.config(state='normal' if connected else 'disabled')
 
 
     def _connect_to_selected():
@@ -674,7 +593,6 @@ def build_frame(parent):
                 info = servers.get(url, {})
                 info.pop('_conn', None)
                 info.pop('_listener', None)
-                info.pop('local_proxy', None)
                 info.pop('remote_port', None)
                 info.pop('pid', None)
                 _save_servers(servers)
@@ -700,8 +618,7 @@ def build_frame(parent):
         info = servers.get(url, {})
         details = []
         details.append(f"URL: {url}")
-        details.append(f"Local proxy: {info.get('local_proxy')}")
-        details.append(f"Remote port: {info.get('remote_port')}")
+        details.append(f"Remote host: {info.get('remote_host')}")
         details.append(f"PID: {info.get('pid')}")
         details.append(f"Conda env: {info.get('conda_env')}")
         details.append(f"Path: {info.get('path')}")
@@ -744,7 +661,6 @@ def build_frame(parent):
 
         info.pop('_conn', None)
         info.pop('_listener', None)
-        info.pop('local_proxy', None)
         _save_servers(servers)
         status_label.config(text='Disconnected')
 

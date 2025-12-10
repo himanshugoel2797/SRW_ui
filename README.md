@@ -4,140 +4,64 @@ This repository implements a small, easy-to-maintain set of utilities for
 running and visualizing SRW simulations. The goal is to keep everything
 dependency-light and easy to run locally.
 
- Main pieces
- - srw_tools.rpc_server — a tiny XML-RPC server exposing a few helpers
- - srw_tools.git_helper — convenient wrappers around git commands. New convenience functions exist to stage files, make commits, and push/pull to a named remote and branch.
- - srw_tools.visualizer — base class and registry for visualizer scripts
- - srw_tools/visualizers/ — drop-in directory for your custom visualizers; any .py file placed here will be auto-imported and can register itself with the system
+Main pieces
+- `srw_tools.ssh_helper` — SSH helpers for running commands and background jobs on remote hosts
+- `srw_tools.git_helper` — convenient wrappers around git commands
+- `srw_tools.visualizer` — base class and registry for visualizer scripts
+- `srw_tools/visualizers/` — drop-in directory for your custom visualizers
+# SRW UI tools (lightweight)
 
- Examples (python):
+A small collection of utilities for running and visualizing SRW simulations.
+The project aims to be dependency-light and easy to use locally or on remote
+machines via SSH.
 
- ```py
- from srw_tools import git_helper
-
- # stage files and commit
- git_helper.stage_files(['sim.out', 'params.json'], path='/path/to/repo')
- git_helper.commit('record simulation', path='/path/to/repo')
-
- # push to origin/main
- git_helper.push(remote='origin', branch='main', path='/path/to/repo', set_upstream=True)
-
- # pull updates
- git_helper.pull(remote='origin', branch='main', path='/path/to/repo')
- ```
-- srw_cli.py — small CLI entrypoint
+Main pieces
+- `srw_tools.ssh_helper` — SSH helpers for running commands and background jobs on remote hosts
+- `srw_tools.git_helper` — convenient wrappers around git commands
+- `srw_tools.visualizer` — base class and registry for visualizer scripts
+- `srw_tools/visualizers/` — drop-in directory for custom visualizers
 
 Requirements
 - Python 3.8+
-- Optional: numpy and matplotlib for the example visualizer
-
-Dependencies
- - Install the common scientific dependencies used by the visualizers and SRW workflows with:
-
-```bash
-pip install -r requirements.txt
-```
-
-Note: `srwpy` is listed as a dependency in `requirements.txt` to support SRW-native helpers. Pin exact versions in the requirements file if you need reproducible environments.
+- Optional: `numpy` and `matplotlib` for example visualizers
+- Optional: `asyncssh` for SSH operations (used by the GUI)
 
 Quickstart
- - List visualizers:
+- List visualizers:
 
 ```bash
 python -m srw_tools.cli visualizer list
 ```
 
- - Run the example visualizer (returns OK if a plot was produced):
+- Run a visualizer from the CLI:
 
 ```bash
 python -m srw_tools.cli visualizer run --name=sine
 ```
 
- - Start RPC server (file access is not restricted by default):
-
-```bash
-python -m srw_tools.cli start-rpc --host 127.0.0.1 --port 8000
-```
-
-To restrict file access to a specific folder, pass --dir:
-
-```bash
-python -m srw_tools.cli start-rpc --host 127.0.0.1 --port 8000 --dir path/to/allowed/folder
-```
-
-GUI
- - Run the Tkinter-based GUI which shows a button for every registered visualizer:
+- Run the Tkinter GUI:
 
 ```bash
 python -m srw_tools.cli
 ```
-or, if installed via the package entry point (srw-cli), run:
 
-```bash
-srw-cli
+SSH / Remote execution
+- The GUI allows connecting to SSH targets (format `user@host[:port]`).
+  When connected the GUI stores an active SSH connection which can be used
+  to run commands on the remote host.
+- Use `srw_tools.ssh_helper` (or the GUI) to run remote commands, start background jobs, and fetch remote files.
+
+If you need to run a remote visualizer process and receive structured output,
+configure the server entry with a `remote_cmd` template (used by visualizers).
+The template may include `{name}` and `{params}` which will be filled with
+visualizer name and a JSON-encoded parameter dictionary.
+
+Example `remote_cmd` value:
+
+```
+python -u -c "import json; from srw_tools.visualizer import get_visualizer; params=json.loads('{params}'); print(json.dumps(get_visualizer('{name}')().local_process(params)))"
 ```
 
-Richer GUI output
- - The GUI renders visualizer outputs more helpfully by embedding
-	 matplotlib plots directly in the Tk UI when `matplotlib` is installed.
-	 - When a visualizer returns numeric data with 'x' and 'y' keys, an
-		 embedded Matplotlib plot is shown.
-	 - When a visualizer returns a 2D numeric grid (key 'grid' or a 2D list/array)
-		 the GUI displays it using `imshow`.
+This repository also contains a small native helper in `srw_tools/native/` for
+optional C-accelerated routines.
 	 - A Matplotlib navigation toolbar is added when a GUI parent window is available,
-		 enabling pan/zoom/and other interactive features within the embedded plot.
-
-Native acceleration (CMake + C shared library)
- - The repository contains a tiny CMake-based native library under
-	 `srw_tools/native` that provides fast data-processing helpers implemented
-	 as a small C API (header: `include/fastlib.h`) and compiled into a shared
-	 library named `srwfast` (libsrwfast.so / srwfast.dll / libsrwfast.dylib).
- - To build the Python extension locally (Linux/macOS/Windows with CMake):
-
-	```bash
-	cd srw_tools/native
-	mkdir -p build && cd build
-	cmake ..
-	cmake --build . --config Release
-	```
-
-		- After building, the Python extension module will be copied into the `srw_tools`
-			package directory by the setup process and `srw_tools.nativelib` will be
-			available as a compiled Python extension (built using the Python/C API).
-			No ctypes-based loading is used; the module is importable directly and
-			exposes the same convenience functions (`sum_array`, `scale_array`, `load_file`).
-
-	Using the native extension
-	 - Import the helper:
-
-	```py
-	from srw_tools import nativelib
-	```
-
-		- `sum_array` — returns sum of a sequence of numeric values (list/ndarray)
-		- `scale_array` — scales a numeric array in-place and returns the scaled array
-		- Bidirectional RPC callbacks: clients can register a callback URL with the server
-			and the server will push results to the client's `on_visualizer_result(name, result)`
-			endpoint when `process_visualizer` requests are performed with a callback URL.
-
-SSH / Launch remote servers from GUI
- - The GUI stores a persistent list of registered SSH targets in your home
-	 directory (file: ~/.srw_ui_servers.json).
- - When a server is selected you can enter a path and a conda environment
-	 name and press "Connect via SSH". If `asyncssh` is installed the GUI
-	 will attempt to SSH into the host, cd to the provided path, run the
-	 command to start the RPC server inside the specified conda environment,
-	 and set up a local port forward so the GUI connects to the remote server
-	 transparently.
- - Connection details are saved so you can re-connect quickly later. Note
-	 that launching remote servers depends on `asyncssh` and the remote host
-	 having the requested conda environment and the Python package installed.
-
-Parameters & remote processing
- - Visualizers can expose a `parameters()` schema — the GUI will prompt you
-	 for parameter values before running a visualizer. Parameters are simple
-	 typed fields: int, float, str, or bool.
- - When an SSH server is connected, the visualizer's `process()` call will 
-	 be performed on the remote server (via `process_visualizer(name, params)`), 
-	 and the result will be handed to `view()` for display locally. This makes 
-	 it easy to present data produced remotely without reimplementing UI code.
