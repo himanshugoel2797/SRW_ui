@@ -1,17 +1,16 @@
-"""Helpers for embedding visualizations using HoloViews/Bokeh.
+"""Helpers for embedding visualizations using Matplotlib.
 
-This module provides a small Holo/Bokeh embed helper which aims to be a
-lightweight replacement for the earlier MatplotlibEmbed. It prefers the
-event-driven `watchdog` and `bokeh` libraries when available; otherwise
-it falls back to simple in-memory representations for headless tests.
+This module provides a matplotlib embed helper for embedding plots
+into tkinter windows. It falls back to simple in-memory representations
+for headless tests when matplotlib is unavailable.
 """
 from typing import Optional, Callable, Any
 
 
 class _DummyAx:
-    """Lightweight adapter that records plotting calls when bokeh is
+    """Lightweight adapter that records plotting calls when matplotlib is
     unavailable. This keeps tests lightweight and avoids hard dependency
-    on bokeh in CI.
+    on matplotlib in CI.
 
     The adapter provides a minimal `plot`, `set_title` and `imshow`
     interface used by existing visualizers.
@@ -32,66 +31,60 @@ class _DummyAx:
         self._images.append(grid)
 
 
-class HoloEmbed:
-    """Embedder that uses Bokeh (and HoloViews where appropriate) if
-    available, otherwise provides a headless adapter for tests.
+class MatplotlibEmbed:
+    """Embedder that uses matplotlib if available, otherwise provides
+    a headless adapter for tests.
 
     The `create_figure(draw_fn)` method will call draw_fn(ax) where `ax`
-    is either a Bokeh-aware adapter (supports `plot`, `imshow`, `set_title`)
-    or a `_DummyAx` for headless operation.
+    is either a matplotlib axes object or a `_DummyAx` for headless operation.
     """
 
     def __init__(self, parent: Optional[Any] = None, figsize=(5, 3)):
         self.parent = parent
         self.figsize = figsize
         self.figure = None
+        self.canvas = None
+        self.toolbar = None
 
     def create_figure(self, draw_fn: Optional[Callable] = None):
-        """Create a Bokeh figure and pass an adapter to draw_fn.
+        """Create a matplotlib figure and pass the axes to draw_fn.
 
-        If Bokeh is not installed this will fall back to a dummy adapter
+        If matplotlib is not installed this will fall back to a dummy adapter
         so tests can assert behaviour without heavy plotting deps.
         """
-        # Prefer to use bokeh if available
         try:
-            from bokeh.plotting import figure as bokeh_figure
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import (
+                FigureCanvasTkAgg,
+                NavigationToolbar2Tk,
+            )
 
-            width = int(self.figsize[0] * 100)
-            height = int(self.figsize[1] * 100)
-            fig = bokeh_figure(width=width, height=height)
-
-            class _BokehAx:
-                def __init__(self, fig):
-                    self.fig = fig
-
-                def plot(self, x, y, *args, **kwargs):
-                    # bokeh uses line for 2D lines
-                    try:
-                        self.fig.line(x, y, *args, **kwargs)
-                    except Exception:
-                        # accept numpy arrays and convert
-                        self.fig.line(list(x), list(y), *args, **kwargs)
-
-                def set_title(self, t):
-                    try:
-                        self.fig.title.text = str(t)
-                    except Exception:
-                        pass
-
-                def imshow(self, grid, *args, **kwargs):
-                    # Bokeh image expects a 2D array inside a list
-                    try:
-                        self.fig.image(image=[grid], x=0, y=0, dw=1, dh=1)
-                    except Exception:
-                        # convert to lists if needed
-                        self.fig.image(image=[list(map(list, grid))], x=0, y=0, dw=1, dh=1)
-
-            ax = _BokehAx(fig)
+            fig, ax = plt.subplots(figsize=self.figsize)
+            
             if draw_fn is not None:
                 draw_fn(ax)
 
             self.figure = fig
-            # embedding into tkinter is not implemented; visualizers handle UI
+            
+            # Embed into tkinter if parent is provided
+            if self.parent is not None:
+                canvas = FigureCanvasTkAgg(fig, master=self.parent)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill='both', expand=True)
+                # Add a navigation toolbar for interactive plotting
+                try:
+                    toolbar = NavigationToolbar2Tk(canvas, self.parent)
+                    # Ensure the toolbar initializes its state
+                    toolbar.update()
+                    # pack the toolbar above the canvas
+                    toolbar.pack(side='top', fill='x')
+                    self.toolbar = toolbar
+                except Exception:
+                    # If backend doesn't support toolbar or the environment
+                    # is headless, skip adding toolbar.
+                    self.toolbar = None
+                self.canvas = canvas
+            
             return fig
         except Exception:
             # fallback: headless dummy adapter + simple figure-like object
@@ -109,4 +102,16 @@ class HoloEmbed:
 
     def clear(self):
         """Clear any internal figure references."""
+        if self.canvas is not None:
+            try:
+                self.canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self.canvas = None
+        if self.toolbar is not None:
+            try:
+                self.toolbar.destroy()
+            except Exception:
+                pass
+            self.toolbar = None
         self.figure = None

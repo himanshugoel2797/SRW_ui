@@ -25,9 +25,9 @@ class SquareVisualizer(Visualizer):
         """Display the grid as an image when running in a GUI, otherwise return data."""
         output = self.process(data)
 
-        # Use the HoloEmbed helper for consistent embedding
+        # Use the MatplotlibEmbed helper for consistent embedding
         try:
-            from ..gui_helpers import HoloEmbed
+            from ..gui_helpers import MatplotlibEmbed
         except Exception:
             return output
 
@@ -38,6 +38,10 @@ class SquareVisualizer(Visualizer):
         win = tk.Toplevel()
         win.title(self.name)
 
-        emb = HoloEmbed(figsize=(4, 4))
+        # Create a frame to hold the plot
+        frame = tk.Frame(win)
+        frame.pack(fill='both', expand=True)
+
+        emb = MatplotlibEmbed(parent=frame, figsize=(4, 4))
         emb.create_figure(draw)
         return True

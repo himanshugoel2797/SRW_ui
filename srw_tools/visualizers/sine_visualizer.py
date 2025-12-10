@@ -42,9 +42,9 @@ class SineVisualizer(Visualizer):
         """
         output = self.process(data)
 
-        # Use the HoloEmbed helper so embedding logic is shared
+        # Use the MatplotlibEmbed helper so embedding logic is shared
         try:
-            from ..gui_helpers import HoloEmbed
+            from ..gui_helpers import MatplotlibEmbed
         except Exception:
             # Can't embed; return the data to caller
             return output
@@ -57,7 +57,11 @@ class SineVisualizer(Visualizer):
         win = tk.Toplevel()
         win.title(self.name)
 
-        emb = HoloEmbed(figsize=(5, 3))
+        # Create a frame to hold the plot
+        frame = tk.Frame(win)
+        frame.pack(fill='both', expand=True)
+
+        emb = MatplotlibEmbed(parent=frame, figsize=(5, 3))
         emb.create_figure(draw)
 
         return True

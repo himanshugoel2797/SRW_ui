@@ -100,11 +100,14 @@ srw-cli
 ```
 
 Richer GUI output
- - The GUI now renders visualizer outputs more helpfully: when a visualizer
-	 returns numeric data with 'x' and 'y' keys, the GUI will show an embedded
-	 matplotlib plot (if matplotlib is installed). When a visualizer returns a
-	 2D numeric grid (key 'grid' or a 2D list/array) the GUI displays it with
-	 imshow. Other outputs are shown in a small text viewer.
+ - The GUI renders visualizer outputs more helpfully by embedding
+	 matplotlib plots directly in the Tk UI when `matplotlib` is installed.
+	 - When a visualizer returns numeric data with 'x' and 'y' keys, an
+		 embedded Matplotlib plot is shown.
+	 - When a visualizer returns a 2D numeric grid (key 'grid' or a 2D list/array)
+		 the GUI displays it using `imshow`.
+	 - A Matplotlib navigation toolbar is added when a GUI parent window is available,
+		 enabling pan/zoom/and other interactive features within the embedded plot.
 
 Parameters & remote processing
  - Visualizers can expose a `parameters()` schema — the GUI will prompt you
