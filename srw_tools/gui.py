@@ -12,6 +12,9 @@ from pathlib import Path
 import socket
 import threading
 import asyncio
+import xmlrpc.server
+import xmlrpc.client
+import uuid
 
 SERVERS_FILE = Path.home() / '.srw_ui_servers.json'
 
@@ -63,7 +66,41 @@ def _find_free_local_port():
     return port
 
 
-def start_ssh_server(url: str, path: str, env: str):
+def start_callback_server(servers: dict, url: str):
+    """Start a lightweight XML-RPC server to receive callbacks from a remote RPC server.
+
+    Returns (callback_id, callback_url, server_obj, thread).
+    """
+    host = '127.0.0.1'
+    port = _find_free_local_port()
+    srv = xmlrpc.server.SimpleXMLRPCServer((host, port), allow_none=True, logRequests=False)
+
+    # A simple handler that stores last callback result in the servers mapping
+    def on_visualizer_result(name, result):
+        # find the server entry by url and store the last callback
+        entry = servers.get(url)
+        if entry is not None:
+            entry.setdefault('_callbacks', []).append({'name': name, 'result': result})
+            entry.setdefault('_last_callback', {'name': name, 'result': result})
+        return True
+
+    srv.register_function(on_visualizer_result, 'on_visualizer_result')
+
+    # run the server in a background thread
+    def run_server():
+        try:
+            srv.serve_forever()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+    cb_id = str(uuid.uuid4())
+    cb_url = f'http://{host}:{port}/'
+    return cb_id, cb_url, srv, t
+
+
+def start_ssh_server(url: str, path: str, env: str, reverse_forward_local_port: int | None = None):
     """Attempt to SSH to the host in url, start a server at a free remote port,
     forward it locally and return (local_port, remote_port, conn, listener).
 
@@ -117,6 +154,26 @@ def start_ssh_server(url: str, path: str, env: str):
 
         local_port = _find_free_local_port()
         listener = await conn.forward_local_port('127.0.0.1', local_port, '127.0.0.1', remote_port)
+
+        # If a reverse forward local port is provided, set this up now so the
+        # remote host can reach the client's callback server. Allocate a remote
+        # free port and forward that port back to the client's local callback port.
+        remote_cb_port = None
+        remote_cb_listener = None
+        if reverse_forward_local_port is not None:
+            # pick a free remote port
+            proc = await conn.run("python -c 'import socket; s=socket.socket(); s.bind((\"127.0.0.1\",0)); print(s.getsockname()[1]); s.close()'", check=True)
+            try:
+                remote_cb_port = int(proc.stdout.strip())
+            except Exception:
+                remote_cb_port = None
+            if remote_cb_port is not None:
+                # set up remote->local forwarding (remote port on remote host -> client local port)
+                remote_cb_listener = await conn.forward_remote_port('127.0.0.1', remote_cb_port, '127.0.0.1', reverse_forward_local_port)
+
+        # If reverse_forward_local_port was provided, return remote_callback info too
+        if reverse_forward_local_port is not None:
+            return local_port, remote_port, pid, conn, listener, remote_cb_port, remote_cb_listener
         return local_port, remote_port, pid, conn, listener
 
     loop = asyncio.new_event_loop()
@@ -163,6 +220,17 @@ def stop_ssh_server(url: str, servers: dict):
                     listener.close()
                 except Exception:
                     pass
+
+            # close remote callback listener if present
+            try:
+                remote_cb_listener = info.get('_remote_cb_listener')
+                if remote_cb_listener and hasattr(remote_cb_listener, 'close'):
+                    try:
+                        remote_cb_listener.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
             # attempt to close connection
             try:
@@ -259,12 +327,56 @@ def connect_to_server(url: str, path: str, env: str, servers: dict):
         entry['local_proxy'] = client_url
         # Make client_url the canonical field for clients to use
         entry['client_url'] = client_url
+        # try to register a callback server (best-effort)
+        try:
+            cb_id, cb_url, cb_srv, cb_thread = start_callback_server(servers, url)
+            proxy = xmlrpc.client.ServerProxy(client_url)
+            proxy.register_client(cb_id, cb_url)
+            entry['callback_id'] = cb_id
+            entry['callback_url'] = cb_url
+            entry['_callback_srv'] = cb_srv
+            entry['_callback_thread'] = cb_thread
+        except Exception:
+            # not critical — continue
+            pass
         _save_servers(servers)
         return True, f'Using local server at {client_url}', {'local_proxy': client_url}
 
     # Otherwise attempt SSH start
     try:
-        lp, remote_port, pid, conn, listener = start_ssh_server(url, path, env)
+        # Start a local callback server first so we can request a reverse forward
+        # on the SSH connection that points a remote port back to our local
+        # callback server so the remote server can reach it.
+        cb_id = None
+        cb_url = None
+        cb_srv = None
+        cb_thread = None
+        try:
+            cb_id, cb_url, cb_srv, cb_thread = start_callback_server(servers, url)
+        except Exception:
+            cb_id = None
+            cb_url = None
+            cb_srv = None
+            cb_thread = None
+
+        # If we created a callback server, extract the local port and request
+        # reverse forwarding for it. start_ssh_server will set up the reverse
+        # forward if a local callback port is provided.
+        if cb_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(cb_url)
+            local_cb_port = parsed.port
+            lp, remote_port, pid, conn, listener, remote_cb_port, remote_cb_listener = start_ssh_server(url, path, env, reverse_forward_local_port=local_cb_port)
+            # update info with callback details: prefer the remote callback URL
+            remote_cb_url = f'http://127.0.0.1:{remote_cb_port}/' if remote_cb_port else cb_url
+            entry['callback_id'] = cb_id
+            entry['callback_url'] = cb_url
+            entry['_callback_srv'] = cb_srv
+            entry['_callback_thread'] = cb_thread
+            entry['_remote_cb_listener'] = remote_cb_listener
+            entry['callback_remote_url'] = remote_cb_url
+        else:
+            lp, remote_port, pid, conn, listener = start_ssh_server(url, path, env)
         # create xmlrpc client pointing at forwarding
         entry['local_proxy'] = f'http://127.0.0.1:{lp}/'
         entry['remote_port'] = remote_port
@@ -273,6 +385,19 @@ def connect_to_server(url: str, path: str, env: str, servers: dict):
         entry['_listener'] = listener
         # align client_url so visualizers will use the forwarded proxy
         entry['client_url'] = entry['local_proxy']
+        # Try to register a local callback server with the remote server (best-effort).
+        try:
+            # If we created a callback and set up a remote forward, register the remote callback URL
+            if entry.get('callback_remote_url'):
+                proxy = xmlrpc.client.ServerProxy(entry['local_proxy'])
+                proxy.register_client(entry['callback_id'], entry['callback_remote_url'])
+            elif cb_id and cb_url:
+                # fallback: register the local callback URL (may not be reachable)
+                proxy = xmlrpc.client.ServerProxy(entry['local_proxy'])
+                proxy.register_client(cb_id, cb_url)
+        except Exception:
+            # ignore callback registration failures
+            pass
         _save_servers(servers)
         return True, f'Connected (localhost:{lp})', {'local_proxy': entry['local_proxy'], 'remote_port': remote_port, 'pid': pid}
     except Exception as e:
@@ -312,7 +437,48 @@ def disconnect_ssh_server(url: str, servers: dict):
 
     info.pop('_conn', None)
     info.pop('_listener', None)
+    # Close remote callback listener if it exists
+    try:
+        remote_cb_listener = info.get('_remote_cb_listener')
+        if remote_cb_listener and hasattr(remote_cb_listener, 'close'):
+            try:
+                remote_cb_listener.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Try to unregister callback on the server side if one was registered
+    try:
+        cb_id = info.get('callback_id')
+        cb_url = info.get('callback_url')
+        if cb_id and cb_url:
+            try:
+                proxy = xmlrpc.client.ServerProxy(info.get('client_url') or info.get('local_proxy'))
+                proxy.unregister_client(cb_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     info.pop('local_proxy', None)
+    # Stop local callback server if any
+    try:
+        cb_srv = info.get('_callback_srv')
+        if cb_srv:
+            try:
+                cb_srv.shutdown()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    info.pop('client_url', None)
+    info.pop('callback_id', None)
+    info.pop('callback_url', None)
+    info.pop('_callback_srv', None)
+    info.pop('_callback_thread', None)
+    info.pop('_remote_cb_listener', None)
+    info.pop('callback_remote_url', None)
     _save_servers(servers)
     return True, 'disconnected'
 

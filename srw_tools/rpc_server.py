@@ -5,6 +5,9 @@ functions for remote invocation. Keep the API minimal and easy to extend.
 """
 from xmlrpc.server import SimpleXMLRPCServer
 from xmlrpc.server import SimpleXMLRPCRequestHandler
+import xmlrpc.client
+import threading
+import time
 import subprocess
 import os
 from typing import Optional, Iterable
@@ -38,6 +41,11 @@ class RPCServer:
         # register visualizer processing helper so remote clients can ask the
         # server to run a visualizer's process() on the server-side.
         self.server.register_function(self.process_visualizer)
+        # client registration for callbacks
+        self.server.register_function(self.register_client)
+        self.server.register_function(self.unregister_client)
+        self.server.register_function(self.list_clients)
+        self._clients = {}  # client_id -> client_info dict {url, last_seen}
 
     def _is_allowed_path(self, path: str) -> bool:
         """Check the absolute path is inside one of allowed_dirs or allow all if None."""
@@ -79,7 +87,40 @@ class RPCServer:
         print(f"Starting RPC server on {self.server.server_address}")
         self.server.serve_forever()
 
-    def process_visualizer(self, name: str, params: dict):
+    def register_client(self, client_id: str, client_url: str):
+        """Register a remote client URL for callbacks.
+
+        client_id: an opaque identifier supplied by the client (e.g. UUID)
+        client_url: RPC URL where the client is reachable (e.g. http://host:port/)
+        Returns True on success.
+        """
+        try:
+            # validate by making a minimal RPC call
+            proxy = xmlrpc.client.ServerProxy(client_url)
+            # ping method may not exist; it's okay if the call raises -- we'll accept
+            self._clients[client_id] = {'url': client_url, 'last_seen': time.time()}
+            return True
+        except Exception:
+            return False
+
+    def unregister_client(self, client_id: str):
+        if client_id in self._clients:
+            del self._clients[client_id]
+            return True
+        return False
+
+    def list_clients(self):
+        return list(self._clients.keys())
+
+    def _call_client(self, client_url: str, method: str, *args):
+        try:
+            proxy = xmlrpc.client.ServerProxy(client_url)
+            fn = getattr(proxy, method)
+            return fn(*args)
+        except Exception:
+            return None
+
+    def process_visualizer(self, name: str, params: dict, client_url: str = None, client_id: str = None):
         """Run a visualizer's process(name, params) on the server and return the result.
 
         This allows remote clients to request processed data from the server.
@@ -90,7 +131,29 @@ class RPCServer:
 
             cls = get_visualizer(name)
             inst = cls()
-            return inst.process(params)
+            result = inst.process(params)
+            # If a client_url or client_id is provided, attempt to call back
+            cb = None
+            if client_url:
+                cb = client_url
+            elif client_id and client_id in self._clients:
+                cb = self._clients[client_id]['url']
+
+            if cb:
+                # call a `on_visualizer_result(name, result)` method on the client
+                # do it asynchronously so the RPC call completes quickly
+                def _async_cb(url, n, r):
+                    try:
+                        self._call_client(url, 'on_visualizer_result', n, r)
+                    except Exception:
+                        pass
+
+                t = threading.Thread(target=_async_cb, args=(cb, name, result), daemon=True)
+                t.start()
+                # return an acknowledgement to the caller
+                return True
+
+            return result
         except Exception as e:
             # XML-RPC will return a fault for exceptions; keep the error simple
             raise

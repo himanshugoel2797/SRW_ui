@@ -38,8 +38,34 @@ class Visualizer:
         # processed data transparently from the server. The expected server
         # API is `process_visualizer(name, params)` (XML-RPC friendly types).
         server = getattr(self, 'server', None)
+        # Support `server` being either a dict containing 'local_proxy'
+        # and callback metadata (as used by the GUI) or an xmlrpc proxy.
+        if isinstance(server, dict):
+            try:
+                import xmlrpc.client
+                server_info = server
+                local_proxy = server_info.get('local_proxy') or server_info.get('client_url')
+                if local_proxy:
+                    server = xmlrpc.client.ServerProxy(local_proxy)
+                    # cache proxy for subsequent calls
+                    self.server = server
+                # expose callback info to this visualizer instance
+                self.client_url = server_info.get('callback_url')
+                self.client_id = server_info.get('callback_id')
+            except Exception:
+                pass
         if server is not None:
             try:
+                # If a client_url or client_id was configured on this instance, pass it to
+                # the server so the server can perform callback notifications.
+                client_url = getattr(self, 'client_url', None)
+                client_id = getattr(self, 'client_id', None)
+                if client_url is not None:
+                    return server.process_visualizer(self.name, data or {}, client_url)
+                if client_id is not None:
+                    # XML-RPC doesn't support keyword args, pass None for client_url
+                    return server.process_visualizer(self.name, data or {}, None, client_id)
+                # default / backward compatible
                 return server.process_visualizer(self.name, data or {})
             except Exception:
                 # fall back to local processing on error

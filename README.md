@@ -136,8 +136,18 @@ Native acceleration (CMake + C shared library)
 	from srw_tools import nativelib
 	```
 
-	 - `sum_array` — returns sum of a sequence of numeric values (list/ndarray)
-	 - `scale_array` — scales a numeric array in-place and returns the scaled array
+		- `sum_array` — returns sum of a sequence of numeric values (list/ndarray)
+		- `scale_array` — scales a numeric array in-place and returns the scaled array
+		- Bidirectional RPC callbacks: clients can register a callback URL with the server
+			and the server will push results to the client's `on_visualizer_result(name, result)`
+			endpoint when `process_visualizer` requests are performed with a callback URL.
+
+		  Note: For SSH proxied servers, the server must be able to reach the client-side
+		  callback URL — this may require reverse port forwarding or an accessible HTTP
+		  endpoint. The GUI attempts best-effort registration of a callback server and
+		  will store callback metadata under the server entry; if the server cannot reach
+		  the callback URL, callbacks will silently fail.
+			endpoint when `process_visualizer` requests are performed with a callback URL.
 
 Parameters & remote processing
  - Visualizers can expose a `parameters()` schema — the GUI will prompt you

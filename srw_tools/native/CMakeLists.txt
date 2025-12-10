@@ -9,7 +9,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 message(STATUS "Building shared native library 'srwfast'.")
 add_library(srwfast SHARED
-    src/fastlib.cpp
+    src/file_parser.cpp
 )
 target_include_directories(srwfast PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

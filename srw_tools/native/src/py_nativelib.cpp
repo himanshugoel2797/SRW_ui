@@ -5,35 +5,13 @@
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
 #include <numpy/arrayobject.h>
-#include "fastlib.h"
+#include "file_parser.h"
 #include <string>
-
-static PyObject* py_sum_array(PyObject* /*self*/, PyObject* args) {
-    PyObject* obj;
-    if (!PyArg_ParseTuple(args, "O", &obj)) return NULL;
-    PyObject* arr = PyArray_FROM_OTF(obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
-    if (!arr) return NULL;
-    double* data = static_cast<double*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-    npy_intp size = PyArray_SIZE(reinterpret_cast<PyArrayObject*>(arr));
-    double s = fast_sum(data, static_cast<size_t>(size));
-    Py_DECREF(arr);
-    return PyFloat_FromDouble(s);
-}
-
-static PyObject* py_scale_array(PyObject* /*self*/, PyObject* args) {
-    PyObject* obj;
-    double scale;
-    if (!PyArg_ParseTuple(args, "Od", &obj, &scale)) return NULL;
-    PyObject* arr = PyArray_FROM_OTF(obj, NPY_DOUBLE, NPY_ARRAY_INOUT_ARRAY);
-    if (!arr) return NULL;
-    double* data = static_cast<double*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-    npy_intp size = PyArray_SIZE(reinterpret_cast<PyArrayObject*>(arr));
-    fast_scale(data, static_cast<size_t>(size), scale);
-    // copy back if a temporary was made
-    PyArray_ResolveWritebackIfCopy(reinterpret_cast<PyArrayObject*>(arr));
-    PyObject* ret = arr; // return the possibly-updated array
-    return ret;
-}
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+#include <stdint.h>
 
 static PyObject* py_load_file(PyObject* /*self*/, PyObject* args) {
     const char* path = nullptr;
