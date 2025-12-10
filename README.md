@@ -109,6 +109,36 @@ Richer GUI output
 	 - A Matplotlib navigation toolbar is added when a GUI parent window is available,
 		 enabling pan/zoom/and other interactive features within the embedded plot.
 
+Native acceleration (CMake + C shared library)
+ - The repository contains a tiny CMake-based native library under
+	 `srw_tools/native` that provides fast data-processing helpers implemented
+	 as a small C API (header: `include/fastlib.h`) and compiled into a shared
+	 library named `srwfast` (libsrwfast.so / srwfast.dll / libsrwfast.dylib).
+ - To build the Python extension locally (Linux/macOS/Windows with CMake):
+
+	```bash
+	cd srw_tools/native
+	mkdir -p build && cd build
+	cmake ..
+	cmake --build . --config Release
+	```
+
+		- After building, the Python extension module will be copied into the `srw_tools`
+			package directory by the setup process and `srw_tools.nativelib` will be
+			available as a compiled Python extension (built using the Python/C API).
+			No ctypes-based loading is used; the module is importable directly and
+			exposes the same convenience functions (`sum_array`, `scale_array`, `load_file`).
+
+	Using the native extension
+	 - Import the helper:
+
+	```py
+	from srw_tools import nativelib
+	```
+
+	 - `sum_array` — returns sum of a sequence of numeric values (list/ndarray)
+	 - `scale_array` — scales a numeric array in-place and returns the scaled array
+
 Parameters & remote processing
  - Visualizers can expose a `parameters()` schema — the GUI will prompt you
 	 for parameter values before running a visualizer. Parameters are simple
