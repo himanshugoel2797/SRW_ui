@@ -185,6 +185,20 @@ def connect_to_server(url: str, path: str, env: str, servers: dict):
     servers.setdefault(url, {})
     entry = servers[url]
 
+    # Enforce single active SSH connection: if another server is connected,
+    # disconnect it first so only one `_conn` exists at a time.
+    try:
+        existing = next((u for u, info in servers.items() if info.get('_conn')), None)
+        if existing and existing != url:
+            # best-effort disconnect of existing connection
+            try:
+                disconnect_ssh_server(existing, servers)
+            except Exception:
+                # swallow errors and continue to attempt new connection
+                pass
+    except Exception:
+        pass
+
     # Attempt SSH start
     try:
         lp, remote_port, pid, conn, listener = start_ssh_server(url, path, env)
@@ -421,32 +435,6 @@ def build_frame(parent):
 
     selected_server = tk.StringVar(value='')
 
-    def add_server():
-        url = server_entry.get().strip()
-        if not url:
-            return
-        try:
-            # store simple record for this SSH target
-            servers[url] = servers.get(url, {})
-            servers[url]['url'] = url
-            # initially no ssh/forward info
-            servers[url].setdefault('path', '')
-            servers[url].setdefault('conda_env', '')
-            # update menu
-            menu = server_menu['menu']
-            menu.add_command(label=url, command=tk._setit(selected_server, url))
-            selected_server.set(url)
-            _save_servers(servers)
-            # clear the input after adding to make it obvious it was added
-            try:
-                server_entry.delete(0, tk.END)
-            except Exception:
-                pass
-        except Exception as e:
-            messagebox.showerror('Server error', str(e))
-
-    add_button = tk.Button(server_frame, text='Add server', command=add_server)
-    add_button.pack(side=tk.LEFT, padx=(0, 4))
 
     # OptionMenu requires at least one value argument
     initial_values = list(servers.keys()) if servers else ['']
@@ -506,22 +494,46 @@ def build_frame(parent):
         # If server already has a _conn (active ssh connection)
         connected = bool(entry.get('_conn'))
 
-        # Only SSH-style targets are supported now. Enable buttons based on
-        # whether we have an active SSH connection stored on the entry.
-        connect_button.config(text='Connect via SSH', state='normal')
-        stop_button.config(state='normal' if connected else 'disabled')
-        disconnect_button.config(state='normal' if connected else 'disabled')
+        # If any server has an active connection, we only allow actions on
+        # that server. This enforces a single active SSH connection at a time.
+        active = next((u for u, info in servers.items() if info.get('_conn')), None)
+        if active is None:
+            # no active connection anywhere
+            connect_button.config(text='Connect via SSH', state='normal')
+            stop_button.config(state='normal' if connected else 'disabled')
+            disconnect_button.config(state='normal' if connected else 'disabled')
+        elif active == url:
+            # the selected server is the one connected
+            connect_button.config(text='Connected', state='disabled')
+            stop_button.config(state='normal')
+            disconnect_button.config(state='normal')
+        else:
+            # another server is connected — do not allow connect/stop on this one
+            connect_button.config(text=f'Connected: {active}', state='disabled')
+            stop_button.config(state='disabled')
+            disconnect_button.config(state='disabled')
 
 
     def _connect_to_selected():
-        url = selected_server.get()
+        # Allow the user to either select a server from history or type a new
+        # target into the `server_entry` field. If a typed target is present
+        # it takes precedence and will be added to history after a successful
+        # connection.
+        typed = server_entry.get().strip()
+        url = typed or selected_server.get()
         if not url:
-            messagebox.showwarning('No server selected', 'Please select a server')
+            messagebox.showwarning('No server selected', 'Please select or type a server')
             return
         path = path_entry.get().strip()
         env = env_entry.get().strip()
-        servers[url]['path'] = path
-        servers[url]['conda_env'] = env
+
+        # Ensure a record exists for this URL so connect_to_server can store
+        # connection info. We'll add to the OptionMenu on success.
+        if url not in servers:
+            servers[url] = {'url': url, 'path': path, 'conda_env': env}
+        else:
+            servers[url]['path'] = path
+            servers[url]['conda_env'] = env
         _save_servers(servers)
         status_label.config(text='Connecting...')
 
@@ -531,6 +543,39 @@ def build_frame(parent):
                 ok, msg, info = connect_to_server(url, path, env, servers)
                 if ok:
                     status_label.config(text=msg)
+                    # Rebuild the OptionMenu so the most-recently-used server
+                    # appears first. This avoids duplicates and keeps ordering
+                    # consistent with recent use.
+                    try:
+                        menu = server_menu['menu']
+                        # Build an ordered list with the current url first,
+                        # followed by the other known servers in their
+                        # existing order.
+                        ordered = [url] + [k for k in list(servers.keys()) if k != url]
+                        # clear and repopulate menu
+                        menu.delete(0, 'end')
+                        for label in ordered:
+                            menu.add_command(label=label, command=tk._setit(selected_server, label))
+                        # make sure the selection reflects the connected server
+                        selected_server.set(url)
+                        # Reorder the in-memory `servers` mapping to match the
+                        # recent-first ordering and persist it so the file on
+                        # disk reflects the same ordering.
+                        try:
+                            ordered_servers = {k: servers.get(k, {}) for k in ordered}
+                            servers.clear()
+                            servers.update(ordered_servers)
+                            _save_servers(servers)
+                        except Exception:
+                            # if reordering/persistence fails, continue silently
+                            pass
+                    except Exception:
+                        pass
+                    # clear the typed entry once added/successful
+                    try:
+                        server_entry.delete(0, tk.END)
+                    except Exception:
+                        pass
                 else:
                     status_label.config(text='Connect failed')
                     messagebox.showerror('Connect failed', msg)
