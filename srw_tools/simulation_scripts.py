@@ -10,8 +10,11 @@ import importlib.util
 import sys
 import uuid
 from typing import Dict, Optional, Any
-import threading
 import tempfile
+
+# watchdog is a mandatory dependency for efficient filesystem watches
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 class SimulationScriptManager:
     """Singleton manager for discovering simulation scripts on disk.
@@ -309,88 +312,49 @@ class SimulationScriptManager:
         if key in self._watches:
             self.remove_watch(key)
 
-        # Prefer using watchdog observers when available for efficient events
-        try:
-            from watchdog.observers import Observer
-            from watchdog.events import FileSystemEventHandler
+        # Use watchdog observers for efficient filesystem events (required)
+        class _Handler(FileSystemEventHandler):
+            def __init__(self, manager: 'SimulationScriptManager', base_key, cb):
+                super().__init__()
+                self.manager = manager
+                self.base_key = base_key
+                self.cb = cb
 
-            class _Handler(FileSystemEventHandler):
-                def __init__(self, manager: 'SimulationScriptManager', base_key, cb):
-                    super().__init__()
-                    self.manager = manager
-                    self.base_key = base_key
-                    self.cb = cb
-
-                def _maybe_notify(self):
-                    try:
-                        curr = self.manager.list_simulation_scripts(self.base_key, use_cache=False)
-                    except Exception:
-                        curr = {}
-                    cache_key = (self.base_key, 'path')
-                    prev = self.manager._cache.get(cache_key)
-                    if curr != prev:
-                        self.manager._cache[cache_key] = curr
-                        try:
-                            self.cb(curr)
-                        except Exception:
-                            pass
-
-                def on_created(self, event):
-                    if event.src_path.endswith('.py'):
-                        self._maybe_notify()
-
-                def on_modified(self, event):
-                    if event.src_path.endswith('.py'):
-                        self._maybe_notify()
-
-                def on_deleted(self, event):
-                    if event.src_path.endswith('.py'):
-                        self._maybe_notify()
-
-            # try to start observer
-            base_path = str(Path(key or '.'))
-            handler = _Handler(self, key, callback)
-            observer = Observer()
-            observer.schedule(handler, base_path, recursive=True)
-            observer.daemon = True
-            observer.start()
-
-            self._watches[key] = _WatchHandle(observer=observer, use_observer=True)
-            return
-        except Exception:
-            # fallback to polling-based watcher
-            pass
-
-        stop_event = threading.Event()
-
-        def _watch_loop():
-            prev = None
-            # first populate prev with the current state (no change event)
-            prev = self.list_simulation_scripts(key, use_cache=False)
-            cache_key = (key, 'path')
-            # sleep loop
-            while not stop_event.is_set():
+            def _maybe_notify(self):
                 try:
-                    curr = self.list_simulation_scripts(key, use_cache=False)
+                    curr = self.manager.list_simulation_scripts(self.base_key, use_cache=False)
                 except Exception:
                     curr = {}
-
+                cache_key = (self.base_key, 'path')
+                prev = self.manager._cache.get(cache_key)
                 if curr != prev:
-                    # update cached state and notify
-                    self._cache[cache_key] = curr
+                    self.manager._cache[cache_key] = curr
                     try:
-                        callback(curr)
+                        self.cb(curr)
                     except Exception:
-                        # swallow exceptions from callbacks
                         pass
-                    prev = curr
 
-                # wait with timeout so we can shutdown quickly
-                stop_event.wait(interval)
+            def on_created(self, event):
+                if event.src_path.endswith('.py'):
+                    self._maybe_notify()
 
-        th = threading.Thread(target=_watch_loop, daemon=True)
-        th.start()
-        self._watches[key] = _WatchHandle(thread=th, stop_event=stop_event, use_observer=False)
+            def on_modified(self, event):
+                if event.src_path.endswith('.py'):
+                    self._maybe_notify()
+
+            def on_deleted(self, event):
+                if event.src_path.endswith('.py'):
+                    self._maybe_notify()
+
+        # start observer
+        base_path = str(Path(key or '.'))
+        handler = _Handler(self, key, callback)
+        observer = Observer()
+        observer.schedule(handler, base_path, recursive=True)
+        observer.daemon = True
+        observer.start()
+
+        self._watches[key] = _WatchHandle(observer=observer, use_observer=True)
 
     def remove_watch(self, base_dir: Optional[str]):
         """Stop watching base_dir if a watcher exists."""

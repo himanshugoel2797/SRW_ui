@@ -21,47 +21,17 @@ Main pieces
 - `srw_tools.visualizer` — base class and registry for visualizer scripts
 - `srw_tools/visualizers/` — drop-in directory for custom visualizers
 
-Requirements
-- Python 3.8+
-- Optional: `numpy` and `matplotlib` for example visualizers
-- Optional: `asyncssh` for SSH operations (used by the GUI)
-
-Quickstart
-- List visualizers:
-
-```bash
-python -m srw_tools.cli visualizer list
-```
-
-- Run a visualizer from the CLI:
-
-```bash
-python -m srw_tools.cli visualizer run --name=sine
-```
-
-- Run the Tkinter GUI:
-
-```bash
-python -m srw_tools.cli
-```
-
 SSH / Remote execution
 - The GUI allows connecting to SSH targets (format `user@host[:port]`).
   When connected the GUI stores an active SSH connection which can be used
   to run commands on the remote host.
-- Use `srw_tools.ssh_helper` (or the GUI) to run remote commands, start background jobs, and fetch remote files.
 
-If you need to run a remote visualizer process and receive structured output,
-configure the server entry with a `remote_cmd` template (used by visualizers).
-The template may include `{name}` and `{params}` which will be filled with
-visualizer name and a JSON-encoded parameter dictionary.
+This repository also contains a small native helper in `srw_tools/native/` for C-accelerated routines. 
 
-Example `remote_cmd` value:
-
-```
-python -u -c "import json; from srw_tools.visualizer import get_visualizer; params=json.loads('{params}'); print(json.dumps(get_visualizer('{name}')().local_process(params)))"
-```
-
-This repository also contains a small native helper in `srw_tools/native/` for
-optional C-accelerated routines.
-	 - A Matplotlib navigation toolbar is added when a GUI parent window is available,
+# Simulation Data Structure
+- root
+  - simulation base directory
+    - main python file ("run.py" etc)
+    - simulation data directory
+    - plot directory (Stores minimum resolution data, and plots of everything, just in-case)
+    - notes.md
