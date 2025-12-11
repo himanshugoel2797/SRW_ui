@@ -6,12 +6,12 @@ tkinter or GUI code.
 """
 from pathlib import Path
 import ast
-from typing import Dict, Optional
+import importlib.util
+import sys
+import uuid
+from typing import Dict, Optional, Any
 import threading
-import time
-
-
-# unified watch handle type is defined below; remove earlier placeholder
+import tempfile
 
 class SimulationScriptManager:
     """Singleton manager for discovering simulation scripts on disk.
@@ -30,74 +30,270 @@ class SimulationScriptManager:
         # watches map base_dir -> _WatchHandle
         self._watches: Dict[Optional[str], _WatchHandle] = {}
 
-    def list_simulation_scripts(self, base_dir: Optional[str] = None, use_cache: bool = True) -> Dict[str, str]:
+    def list_simulation_scripts(self, base_dir: Optional[str] = None, use_cache: bool = True, key_by: str = 'path') -> Dict[str, str]:
         """Discover simulation scripts under base_dir.
+
+        Returns a dict mapping script `path` -> display `name`.
+
+        The `key_by` parameter controls which mapping is returned: by
+        default (`key_by='path'`) a mapping of path->name is returned.
+        If `key_by='name'` the mapping `name->path` is returned instead.
 
         If use_cache is True, results for the same base_dir may be returned
         from a simple in-memory cache. Use clear_cache() to invalidate.
         """
-        key = base_dir or None
-        if use_cache and key in self._cache:
-            return self._cache[key]
+        cache_key = (base_dir or None, key_by)
+        if use_cache and cache_key in self._cache:
+            return self._cache[cache_key]
 
         base = Path(base_dir or '.')
         results: Dict[str, str] = {}
 
         for p in base.rglob('*.py'):
+            # Use the module loader to import the script and extract the
+            # readable name and set_optics function. We accept executing
+            # the script module because scripts are user-provided and need
+            # to be able to run code to set up their configuration.
             try:
-                text = p.read_text(encoding='utf-8')
+                info = self.load_script(str(p))
             except Exception:
                 continue
 
-            try:
-                mod = ast.parse(text)
-            except Exception:
+            # Skip scripts that don't expose a set_optics function
+            if not info.get('set_optics'):
                 continue
 
-            # require a set_optics function to be defined
-            has_set_optics = any(isinstance(n, ast.FunctionDef) and n.name == 'set_optics' for n in mod.body)
-            if not has_set_optics:
-                continue
-
-            # find assignments to varParam
+            # Determine human-friendly name: prefer `display_name` or
+            # module `name`, fall back to varParams `name` entry, and finally
+            # fallback to filename stem.
             name_val = None
-            for node in mod.body:
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id == 'varParam':
-                            lst = node.value
-                            if not isinstance(lst, ast.List):
-                                continue
-                            for elt in lst.elts:
-                                if isinstance(elt, (ast.List, ast.Tuple)) and len(elt.elts) >= 3:
-                                    # evaluate first and third if constants
-                                    first = elt.elts[0]
-                                    third = elt.elts[2]
-                                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                                        if first.value == 'name' and isinstance(third, ast.Constant):
-                                            name_val = third.value
-                                            break
-                            if name_val:
+            mod = info.get('module')
+            if mod is not None:
+                name_val = getattr(mod, 'display_name', None) or getattr(mod, 'name', None)
+
+            if not name_val:
+                vp = info.get('varParams')
+                if isinstance(vp, (list, tuple)):
+                    for row in vp:
+                        try:
+                            if isinstance(row, (list, tuple)) and len(row) >= 3 and row[0] == 'name':
+                                name_val = row[2]
                                 break
-                if name_val:
-                    break
+                        except Exception:
+                            continue
 
-            if name_val:
+            if not name_val:
+                name_val = p.stem
+
+            try:
+                results[str(p.resolve())] = str(name_val)
+            except Exception:
+                results[str(p)] = str(name_val)
+
+        # If caller wants name->path mapping, invert the dict.
+        final_results = results
+        if key_by == 'name':
+            inv = {}
+            for pth, name in results.items():
+                # prefer first occurrence when names conflict
+                if name not in inv:
+                    inv[name] = pth
+            final_results = inv
+
+        # store cache keyed by base_dir and key_by
+        self._cache[cache_key] = final_results
+        return final_results
+
+    def load_script(self, path: str):
+        """Load a simulation script and return info about it.
+
+        The returned dictionary contains:
+        - 'path': resolved path to the script
+        - 'varParam': value parsed from the script if available (list), or None
+        - 'set_optics': callable function object if present (imported module), or None
+        - 'module': the imported module object (or None)
+
+        We will try to extract `varParam` safely via AST literal parsing to
+        avoid executing arbitrary script code. If `varParam` cannot be
+        extracted as a literal, we fall back to importing the module to
+        retrieve the runtime value. To obtain a callable handle for
+        `set_optics` we import the module in a dedicated namespace and
+        return the reference.
+        """
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(path)
+
+        info = {'path': str(p.resolve()), 'varParams': None, 'set_optics': None, 'module': None}
+
+        # Import module to get set_optics and varParams. We sanitize the
+        # script before executing to remove any top-level calls to
+        # `main()` or `epilogue()` as well as `if __name__ == '__main__'`
+        # blocks that would invoke them. This reduces accidental
+        # side-effects at import time while still executing module-level
+        # initialization that the script intentionally performs.
+        # Create a unique module name to avoid clobbering sys.modules
+        module_name = f"_srw_script_{uuid.uuid4().hex}"
+        try:
+            # Read file text
+            try:
+                src_text = p.read_text(encoding='utf-8')
+            except Exception:
+                src_text = None
+
+            # Sanitize code via AST: remove top-level calls to `main()` and
+            # `epilogue()` as well as if __name__ == '__main__' blocks.
+            def _is_main_if(node: ast.If) -> bool:
+                # Check for: if __name__ == '__main__':
                 try:
-                    results[str(name_val)] = str(p.resolve())
+                    if isinstance(node.test, ast.Compare):
+                        # Check for patterns like: __name__ == '__main__' OR
+                        # '__main__' == __name__ (either order)
+                        left = node.test.left
+                        comps = node.test.comparators
+                        if len(comps) >= 1:
+                            comp = comps[0]
+                            # pattern: __name__ == '__main__'
+                            if isinstance(left, ast.Name) and left.id == '__name__' and isinstance(comp, (ast.Constant, ast.Str)):
+                                val = getattr(comp, 'value', None)
+                                if val == '__main__':
+                                    return True
+                            # pattern: '__main__' == __name__
+                            if isinstance(left, (ast.Constant, ast.Str)) and getattr(left, 'value', None) == '__main__' and isinstance(comp, ast.Name) and comp.id == '__name__':
+                                return True
+                    return False
                 except Exception:
-                    results[str(name_val)] = str(p)
+                    return False
 
-        # store cache
-        self._cache[key] = results
-        return results
+            class _SanitizeTransformer(ast.NodeTransformer):
+                def visit_Module(self, node: ast.Module) -> Any:
+                    new_body = []
+                    for child in node.body:
+                        # Remove simple expressions that call main() or epilogue()
+                        if isinstance(child, ast.Expr) and isinstance(child.value, ast.Call):
+                            func = child.value.func
+                            if isinstance(func, ast.Name) and func.id in ('main', 'epilogue'):
+                                continue
+                        # Remove `if __name__ == '__main__'` blocks entirely
+                        if isinstance(child, ast.If) and _is_main_if(child):
+                            continue
+                        # Otherwise keep the node (and possibly visit nested nodes)
+                        new_body.append(self.visit(child))
+                    node.body = new_body
+                    return node
+
+            sanitized_path = None
+            if src_text is not None:
+                try:
+                    parsed = ast.parse(src_text)
+                    parsed = _SanitizeTransformer().visit(parsed)
+                    ast.fix_missing_locations(parsed)
+                    # compile and write to a temp file in the script directory so
+                    # relative imports keep working. Use a unique file name.
+                    san_name = f"_srw_sanitized_{uuid.uuid4().hex}.py"
+                    tmp_dir = Path(tempfile.mkdtemp(prefix='srw_sanitized_'))
+                    tmp_path = tmp_dir / san_name
+                    # Write source from AST back to file
+                    try:
+                        code = compile(parsed, str(tmp_path), 'exec')
+                        # Since we used compile with filename tmp_path, write
+                        # the original source text for better tracebacks. We'll
+                        # write the sanitized source to the temp file directly
+                        # using ast.unparse when available.
+                        try:
+                            sanitized_text = ast.unparse(parsed)
+                        except Exception:
+                            # Fallback: if ast.unparse isn't available (older
+                            # Pythons), just use original text.
+                            sanitized_text = src_text
+                        tmp_path.write_text(sanitized_text, encoding='utf-8')
+                        sanitized_path = tmp_path
+                    except Exception:
+                        sanitized_path = None
+                except Exception:
+                    sanitized_path = None
+
+            load_path = str(sanitized_path or p)
+            # Temporarily ensure the original script directory is on sys.path so
+            # relative imports and package resources can be resolved correctly.
+            original_dir = str(p.parent.resolve())
+            inserted_sys_path = False
+            if original_dir not in sys.path:
+                sys.path.insert(0, original_dir)
+                inserted_sys_path = True
+            spec = importlib.util.spec_from_file_location(module_name, load_path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                # Do not override an existing module name — remove if created
+                sys.modules[module_name] = mod
+                try:
+                    spec.loader.exec_module(mod)
+                finally:
+                    try:
+                        sys.modules.pop(module_name, None)
+                    except Exception:
+                        pass
+                    if inserted_sys_path:
+                        try:
+                            sys.path.remove(original_dir)
+                        except Exception:
+                            pass
+                info['module'] = mod
+                # Pull set_optics callable if present
+                so = getattr(mod, 'set_optics', None)
+                if callable(so):
+                    info['set_optics'] = so
+                # Prefer `varParams` attribute name; fall back to `varParam`
+                if hasattr(mod, 'varParams'):
+                    info['varParams'] = getattr(mod, 'varParams')
+                elif hasattr(mod, 'varParam'):
+                    info['varParams'] = getattr(mod, 'varParam')
+        except Exception:
+            # Import failed — return what we could find
+            pass
+        finally:
+            # Clean up the temporary sanitized file if we created one
+            try:
+                if sanitized_path is not None and sanitized_path.exists():
+                    sanitized_path.unlink()
+                    # attempt to remove the directory containing it
+                    try:
+                        parent_dir = sanitized_path.parent
+                        if parent_dir.exists():
+                            parent_dir.rmdir()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return info
+
+    def get_varParams(self, path: str):
+        """Return the varParams list for a given script path if available.
+
+        This will import the module and return its `varParams`/`varParam`
+        attribute. If not present, returns None.
+        """
+        info = self.load_script(path)
+        return info.get('varParams')
+
+    def get_set_optics(self, path: str):
+        """Return a callable handle to the script's `set_optics` function.
+
+        If the function is not present, returns None.
+        """
+        info = self.load_script(path)
+        return info.get('set_optics')
 
     def clear_cache(self, base_dir: Optional[str] = None):
         """Clear the cache for base_dir (or all if None)."""
         if base_dir is None:
             self._cache.clear()
         else:
-            self._cache.pop(base_dir, None)
+            # Remove all cache entries for this base_dir (with any key_by value)
+            keys_to_remove = [k for k in self._cache.keys() if k[0] == base_dir]
+            for key in keys_to_remove:
+                self._cache.pop(key, None)
 
     def add_watch(self, base_dir: Optional[str], callback, interval: float = 0.5):
         """Start watching base_dir for changes and call callback(new_results)
@@ -130,9 +326,10 @@ class SimulationScriptManager:
                         curr = self.manager.list_simulation_scripts(self.base_key, use_cache=False)
                     except Exception:
                         curr = {}
-                    prev = self.manager._cache.get(self.base_key)
+                    cache_key = (self.base_key, 'path')
+                    prev = self.manager._cache.get(cache_key)
                     if curr != prev:
-                        self.manager._cache[self.base_key] = curr
+                        self.manager._cache[cache_key] = curr
                         try:
                             self.cb(curr)
                         except Exception:
@@ -170,6 +367,7 @@ class SimulationScriptManager:
             prev = None
             # first populate prev with the current state (no change event)
             prev = self.list_simulation_scripts(key, use_cache=False)
+            cache_key = (key, 'path')
             # sleep loop
             while not stop_event.is_set():
                 try:
@@ -179,7 +377,7 @@ class SimulationScriptManager:
 
                 if curr != prev:
                     # update cached state and notify
-                    self._cache[key] = curr
+                    self._cache[cache_key] = curr
                     try:
                         callback(curr)
                     except Exception:
@@ -230,7 +428,6 @@ class SimulationScriptManager:
 
 
 # singleton instance used by callers
-# singleton instance used by callers (renamed to `script_manager`)
 script_manager = SimulationScriptManager()
 
 class _WatchHandle:
@@ -239,7 +436,3 @@ class _WatchHandle:
         self.stop_event = stop_event
         self.observer = observer
         self.use_observer = use_observer
-
-
-# Module intentionally does not provide a top-level helper function; use
-# the `script_manager` singleton instead to obtain simulation scripts.

@@ -36,8 +36,6 @@ def build_parser():
     p = argparse.ArgumentParser(prog='srw_tools')
     sp = p.add_subparsers(dest='cmd')
 
-    
-
     gitp = sp.add_parser('git')
     gitp.add_argument('sub', choices=['commit', 'status', 'tags'])
     gitp.add_argument('--path', default=None)
