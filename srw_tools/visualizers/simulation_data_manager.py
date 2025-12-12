@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ..visualizer import Visualizer, register_visualizer
 from ..simulation_scripts import script_manager
-from ..git_helper import stage_files, commit, _run_git
+from ..git_helper import stage_files, stage_files_with_annex, annex_available, commit, _run_git
 
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -31,10 +31,18 @@ def _is_git_lfs_available(cwd: Optional[str] = None) -> bool:
         return False
 
 
-def _list_folders(root: Path, show_hidden: bool = False) -> List[Dict[str, Any]]:
+def _list_folders(root: Path, show_hidden: bool = False, scripts_only: bool = True) -> List[Dict[str, Any]]:
     out = []
     if not root.exists() or not root.is_dir():
         return out
+    # pre-discover scripts when scripts_only is requested to avoid
+    # repeated per-folder disk scans.
+    scripts_map = {}
+    if scripts_only:
+        try:
+            scripts_map = script_manager.list_simulation_scripts(base_dir=str(root), use_cache=True, key_by='path')
+        except Exception:
+            scripts_map = {}
     for p in sorted(root.iterdir()):
         if not p.is_dir():
             continue
@@ -47,10 +55,24 @@ def _list_folders(root: Path, show_hidden: bool = False) -> List[Dict[str, Any]]
                     size += f.stat().st_size
             except Exception:
                 pass
+        # if scripts_only is True, only include folders that contain
+        # at least one recognized simulation script somewhere below.
+        scripts_in_folder = []
+        if scripts_map:
+            for spath, sname in scripts_map.items():
+                try:
+                    if Path(spath).resolve().relative_to(p.resolve()):
+                        scripts_in_folder.append(sname)
+                except Exception:
+                    # ValueError or other; not inside the folder
+                    pass
+        if scripts_only and not scripts_in_folder:
+            continue
         out.append({
             'name': p.name,
             'path': str(p.resolve()),
             'size': size,
+            'scripts': scripts_in_folder,
         })
     return out
 
@@ -64,12 +86,14 @@ class SimulationDataManager(Visualizer):
         return [
             {'name': 'data_root', 'type': 'directory', 'default': str(Path('.').resolve()), 'label': 'Data root'},
             {'name': 'show_hidden', 'type': 'bool', 'default': False, 'label': 'Show hidden folders'},
+            {'name': 'scripts_only', 'type': 'bool', 'default': True, 'label': 'Only show folders containing a simulation script'},
         ]
 
     def local_process(self, data=None):
         root = Path((data or {}).get('data_root') or '.')
         show_hidden = bool((data or {}).get('show_hidden'))
-        folders = _list_folders(root, show_hidden=show_hidden)
+        scripts_only = bool((data or {}).get('scripts_only', True))
+        folders = _list_folders(root, show_hidden=show_hidden, scripts_only=scripts_only)
         return {'folders': folders}
 
     def view(self, data=None):
@@ -83,21 +107,37 @@ class SimulationDataManager(Visualizer):
         d = data or {}
         root_dir = Path(d.get('data_root') or '.')
         show_hidden = bool(d.get('show_hidden'))
+        scripts_only = bool(d.get('scripts_only', True))
 
         def _refresh_list(lb):
-            folders = _list_folders(root_dir, show_hidden=show_hidden)
+            # allow toggling scripts_only on-the-fly later if we add UI control
+            folders = _list_folders(root_dir, show_hidden=show_hidden, scripts_only=scripts_only)
             lb.delete(0, 'end')
             for f in folders:
                 size_mb = f['size'] / (1024 * 1024)
-                lb.insert('end', f"{f['name']} ({size_mb:.2f} MB)")
+                scripts = f.get('scripts') or []
+                if scripts:
+                    # show up to two script names, indicate if there are more
+                    if len(scripts) > 2:
+                        script_text = ', '.join(scripts[:2]) + f' (+{len(scripts)-2} more)'
+                    else:
+                        script_text = ', '.join(scripts)
+                    lb.insert('end', f"{script_text} - {f['name']} ({size_mb:.2f} MB)")
+                else:
+                    lb.insert('end', f"{f['name']} ({size_mb:.2f} MB)")
 
         def _selected_name(lb):
             sel = lb.curselection()
             if not sel:
                 return None
             text = lb.get(sel[0])
-            # get name part before space
-            return text.split(' ')[0]
+            # Display format is: "<name> (<size> MB) [— scripts]" — extract
+            # the folder name robustly even if it contains spaces.
+            if ' (' in text:
+                return text.split(' (', 1)[0]
+            if ' - ' in text:
+                return text.split(' - ', 1)[0]
+            return text
 
         def _ensure_root_exists():
             try:
@@ -107,6 +147,7 @@ class SimulationDataManager(Visualizer):
 
         win = tk.Toplevel()
         win.title('Simulation Data Manager')
+        win.geometry('1000x400')
         frame = tk.Frame(win)
         frame.pack(fill='both', expand=True)
 
@@ -120,6 +161,9 @@ class SimulationDataManager(Visualizer):
 
         right = tk.Frame(frame)
         right.pack(side='left', fill='y', padx=6, pady=6)
+
+        name_lbl = tk.Label(right, text='Folder name:')
+        name_lbl.pack(pady=(4, 0))
 
         name_entry = tk.Entry(right, width=30)
         name_entry.pack(padx=4, pady=(0, 8))
@@ -250,7 +294,7 @@ class SimulationDataManager(Visualizer):
                 workdir = str(root_dir)
                 if rc == 0 and out:
                     workdir = out.strip()
-                ok = stage_files(files, path=workdir)
+                ok = stage_files_with_annex(files, path=workdir)
                 if not ok:
                     messagebox.showerror('Backup', 'git add failed')
                     return
@@ -258,8 +302,10 @@ class SimulationDataManager(Visualizer):
                 if not ok:
                     messagebox.showerror('Backup', 'git commit failed')
                     return
-                # if git-lfs is available, we can add a note to the status
-                if _is_git_lfs_available(cwd=workdir):
+                # if git-annex or git-lfs is available, we can add a note to the status
+                if annex_available(path=workdir):
+                    _update_status('Backup committed (annex)')
+                elif _is_git_lfs_available(cwd=workdir):
                     _update_status('Backup committed (LFS)')
                 else:
                     _update_status('Backup committed')

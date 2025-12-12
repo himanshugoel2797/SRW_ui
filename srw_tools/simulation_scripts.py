@@ -66,24 +66,13 @@ class SimulationScriptManager:
             if not info.get('set_optics'):
                 continue
 
-            # Determine human-friendly name: prefer `display_name` or
-            # module `name`, fall back to varParams `name` entry, and finally
-            # fallback to filename stem.
             name_val = None
             mod = info.get('module')
-            if mod is not None:
-                name_val = getattr(mod, 'display_name', None) or getattr(mod, 'name', None)
-
-            if not name_val:
-                vp = info.get('varParams')
-                if isinstance(vp, (list, tuple)):
-                    for row in vp:
-                        try:
-                            if isinstance(row, (list, tuple)) and len(row) >= 3 and row[0] == 'name':
-                                name_val = row[2]
-                                break
-                        except Exception:
-                            continue
+            if mod is not None and hasattr(mod, 'varParam') and mod.varParam:
+                for vp in mod.varParam:
+                    if vp[0] == 'name' and len(vp) >= 2:
+                        name_val = str(vp[2])
+                        break
 
             if not name_val:
                 name_val = p.stem
@@ -127,9 +116,9 @@ class SimulationScriptManager:
         if not p.exists():
             raise FileNotFoundError(path)
 
-        info = {'path': str(p.resolve()), 'varParams': None, 'set_optics': None, 'module': None}
+        info = {'path': str(p.resolve()), 'varParam': None, 'set_optics': None, 'module': None}
 
-        # Import module to get set_optics and varParams. We sanitize the
+        # Import module to get set_optics and varParam. We sanitize the
         # script before executing to remove any top-level calls to
         # `main()` or `epilogue()` as well as `if __name__ == '__main__'`
         # blocks that would invoke them. This reduces accidental
@@ -246,11 +235,11 @@ class SimulationScriptManager:
                 so = getattr(mod, 'set_optics', None)
                 if callable(so):
                     info['set_optics'] = so
-                # Prefer `varParams` attribute name; fall back to `varParam`
-                if hasattr(mod, 'varParams'):
-                    info['varParams'] = getattr(mod, 'varParams')
+                # Prefer `varParam` attribute name; fall back to `varParam`
+                if hasattr(mod, 'varParam'):
+                    info['varParam'] = getattr(mod, 'varParam')
                 elif hasattr(mod, 'varParam'):
-                    info['varParams'] = getattr(mod, 'varParam')
+                    info['varParam'] = getattr(mod, 'varParam')
         except Exception:
             # Import failed — return what we could find
             pass
@@ -271,14 +260,14 @@ class SimulationScriptManager:
 
         return info
 
-    def get_varParams(self, path: str):
-        """Return the varParams list for a given script path if available.
+    def get_varParam(self, path: str):
+        """Return the varParam list for a given script path if available.
 
-        This will import the module and return its `varParams`/`varParam`
+        This will import the module and return its `varParam`/`varParam`
         attribute. If not present, returns None.
         """
         info = self.load_script(path)
-        return info.get('varParams')
+        return info.get('varParam')
 
     def get_set_optics(self, path: str):
         """Return a callable handle to the script's `set_optics` function.

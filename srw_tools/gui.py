@@ -851,9 +851,11 @@ def build_frame(parent):
                     continue
                 # show small label next to the parameter widget
                 try:
-                    lab = tk.Label(current_param_row, text=plabel_text)
-                    lab.pack(side=tk.LEFT, padx=(2, 2))
-                    row._param_labels[pname] = lab
+                    if ptype != 'bool':
+                        # for non-bool params, show label separately
+                        lab = tk.Label(current_param_row, text=plabel_text)
+                        lab.pack(side=tk.LEFT, padx=(2, 2))
+                        row._param_labels[pname] = lab
                 except Exception:
                     pass
                 if ptype == 'bool':
@@ -885,9 +887,9 @@ def build_frame(parent):
                     # Two variables: display_var for OptionMenu display, and
                     # value_var to hold the canonical path value used by code.
                     value_var = tk.StringVar(value=selected_path)
-                    display_var = tk.StringVar(value=(f"{Path(selected_path).name} — {sims.get(selected_path) or ''}" if selected_path else ''))
+                    display_var = tk.StringVar(value=(f"{sims.get(selected_path) or ''} - {Path(selected_path).name}" if selected_path else ''))
                     if paths:
-                        opt = tk.OptionMenu(current_param_row, display_var, *[f"{Path(p).name} — {sims.get(p) or ''}" for p in paths])
+                        opt = tk.OptionMenu(current_param_row, display_var, *[f"{sims.get(p) or ''} - {Path(p).name}" for p in paths])
                         # Build menu entries to update both variables when chosen
                         try:
                             menu = opt['menu']
