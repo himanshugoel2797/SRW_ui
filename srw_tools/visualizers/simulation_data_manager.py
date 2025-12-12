@@ -1,80 +1,29 @@
 """Simulation Data Manager visualizer
 
-Provides a small GUI for managing simulation data directories under a
-configured root: list available folders, create new folders, fork
-existing ones, delete folders, export/import zip archives, and commit
-backups using git. The visualizer falls back to returning structured
-data when tkinter is not available (so tests and headless usage work).
+Provides a GUI for managing simulation data directories: list, create, fork,
+delete folders, export/import zip archives, and commit backups using git.
 """
 from __future__ import annotations
 
 from ..visualizer import Visualizer, register_visualizer
-from ..simulation_scripts import script_manager
-from ..git_helper import stage_files, stage_files_with_annex, annex_available, commit, _run_git
+from .. import simulation_scripts
+from ..git_helper import stage_files_with_annex, annex_available, commit, _run_git
+from ..folder_utils import list_folders, format_folder_display
 
 from pathlib import Path
-from typing import Optional, Dict, Any, List
-import os
+from typing import Optional, Dict, Any
 import shutil
 import zipfile
-import subprocess
 import threading
 
 
 def _is_git_lfs_available(cwd: Optional[str] = None) -> bool:
+    """Check if git-lfs is available in the system."""
     try:
-        # Prefer the helper's _run_git to keep behavior consistent with the
-        # rest of the project; it returns rc, out, err.
         rc, out, err = _run_git(["lfs", "version"], cwd=cwd)
         return rc == 0
     except Exception:
         return False
-
-
-def _list_folders(root: Path, show_hidden: bool = False, scripts_only: bool = True) -> List[Dict[str, Any]]:
-    out = []
-    if not root.exists() or not root.is_dir():
-        return out
-    # pre-discover scripts when scripts_only is requested to avoid
-    # repeated per-folder disk scans.
-    scripts_map = {}
-    if scripts_only:
-        try:
-            scripts_map = script_manager.list_simulation_scripts(base_dir=str(root), use_cache=True, key_by='path')
-        except Exception:
-            scripts_map = {}
-    for p in sorted(root.iterdir()):
-        if not p.is_dir():
-            continue
-        if not show_hidden and p.name.startswith('.'):
-            continue
-        size = 0
-        for f in p.rglob('*'):
-            try:
-                if f.is_file():
-                    size += f.stat().st_size
-            except Exception:
-                pass
-        # if scripts_only is True, only include folders that contain
-        # at least one recognized simulation script somewhere below.
-        scripts_in_folder = []
-        if scripts_map:
-            for spath, sname in scripts_map.items():
-                try:
-                    if Path(spath).resolve().relative_to(p.resolve()):
-                        scripts_in_folder.append(sname)
-                except Exception:
-                    # ValueError or other; not inside the folder
-                    pass
-        if scripts_only and not scripts_in_folder:
-            continue
-        out.append({
-            'name': p.name,
-            'path': str(p.resolve()),
-            'size': size,
-            'scripts': scripts_in_folder,
-        })
-    return out
 
 
 @register_visualizer
@@ -93,7 +42,8 @@ class SimulationDataManager(Visualizer):
         root = Path((data or {}).get('data_root') or '.')
         show_hidden = bool((data or {}).get('show_hidden'))
         scripts_only = bool((data or {}).get('scripts_only', True))
-        folders = _list_folders(root, show_hidden=show_hidden, scripts_only=scripts_only)
+        folders = list_folders(root, show_hidden=show_hidden, scripts_only=scripts_only, 
+                              script_manager=simulation_scripts)
         return {'folders': folders}
 
     def view(self, data=None):
@@ -110,33 +60,21 @@ class SimulationDataManager(Visualizer):
         scripts_only = bool(d.get('scripts_only', True))
 
         def _refresh_list(lb):
-            # allow toggling scripts_only on-the-fly later if we add UI control
-            folders = _list_folders(root_dir, show_hidden=show_hidden, scripts_only=scripts_only)
+            folders = list_folders(root_dir, show_hidden=show_hidden, scripts_only=scripts_only,
+                                  script_manager=simulation_scripts)
             lb.delete(0, 'end')
             for f in folders:
-                size_mb = f['size'] / (1024 * 1024)
-                scripts = f.get('scripts') or []
-                if scripts:
-                    # show up to two script names, indicate if there are more
-                    if len(scripts) > 2:
-                        script_text = ', '.join(scripts[:2]) + f' (+{len(scripts)-2} more)'
-                    else:
-                        script_text = ', '.join(scripts)
-                    lb.insert('end', f"{script_text} - {f['name']} ({size_mb:.2f} MB)")
-                else:
-                    lb.insert('end', f"{f['name']} ({size_mb:.2f} MB)")
+                lb.insert('end', format_folder_display(f))
 
         def _selected_name(lb):
             sel = lb.curselection()
             if not sel:
                 return None
             text = lb.get(sel[0])
-            # Display format is: "<name> (<size> MB) [— scripts]" — extract
-            # the folder name robustly even if it contains spaces.
+            if ' - ' in text:
+                return text.split(' - ', 1)[1].split(' (', 1)[0]
             if ' (' in text:
                 return text.split(' (', 1)[0]
-            if ' - ' in text:
-                return text.split(' - ', 1)[0]
             return text
 
         def _ensure_root_exists():
@@ -240,9 +178,7 @@ class SimulationDataManager(Visualizer):
             dst = filedialog.asksaveasfilename(defaultextension='.zip', initialfile=f"{name}.zip")
             if not dst:
                 return
-            base = root_dir / name
             try:
-                # create zip of the folder
                 shutil.make_archive(dst[:-4], 'zip', root_dir / name)
                 _update_status(f'Exported {name} -> {dst}')
             except Exception as e:
@@ -271,7 +207,6 @@ class SimulationDataManager(Visualizer):
 
         def _refresh():
             nonlocal root_dir, show_hidden
-            # allow on-the-fly changes to data_root via name_entry if provided
             entered_root = name_entry.get().strip()
             if entered_root and Path(entered_root).exists():
                 root_dir = Path(entered_root).resolve()
@@ -283,26 +218,27 @@ class SimulationDataManager(Visualizer):
                 messagebox.showwarning('Backup', 'Nothing selected')
                 return
             folder = root_dir / name
-            # Stage all files under folder and commit
             try:
                 files = [str(p) for p in folder.rglob('*') if p.is_file()]
                 if not files:
                     messagebox.showinfo('Backup', 'Nothing to backup')
                     return
-                # use the repository root as working directory
+                
                 rc, out, err = _run_git(["rev-parse", "--show-toplevel"], cwd=str(root_dir))
                 workdir = str(root_dir)
                 if rc == 0 and out:
                     workdir = out.strip()
+                
                 ok = stage_files_with_annex(files, path=workdir)
                 if not ok:
                     messagebox.showerror('Backup', 'git add failed')
                     return
+                
                 ok = commit(f'Backup simulation data: {name}', path=workdir)
                 if not ok:
                     messagebox.showerror('Backup', 'git commit failed')
                     return
-                # if git-annex or git-lfs is available, we can add a note to the status
+                
                 if annex_available(path=workdir):
                     _update_status('Backup committed (annex)')
                 elif _is_git_lfs_available(cwd=workdir):
@@ -327,14 +263,5 @@ class SimulationDataManager(Visualizer):
         btn_backup = tk.Button(right, text='Backup (git)', width=18, command=_backup)
         btn_backup.pack(pady=(2, 2))
 
-        # Initially, set focus to listbox
         lb.focus_set()
-
         return True
-# Simulation Data Manager
-# Allows for creating/deleting simulation data folders and managing their contents.
-# Simulations can be forked, freshly created, or deleted.
-# Changes are tracked and backed up via git
-# If Git LFS is available, large files are stored via LFS, else only files up to the configured size are stored.
-# All scripts can be exported/imported as .zip files for easy sharing.
-# A refresh button allows reloading the simulation list from disk.

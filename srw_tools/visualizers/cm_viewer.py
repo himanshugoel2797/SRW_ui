@@ -4,7 +4,7 @@ It registers a tiny visualizer called 'square' so tests can confirm
 auto-loading works.
 """
 from ..visualizer import Visualizer, register_visualizer
-from ..simulation_scripts import script_manager
+from .. import simulation_scripts
 
 
 @register_visualizer
@@ -22,7 +22,7 @@ class CoherentModeVisualizer(Visualizer):
             return False
         
         # Get the CM filename from the simulation script
-        script_data = script_manager.load_script(simulation)
+        script_data = simulation_scripts.load_script(simulation)
         
         # TODO: Load the CMs from this h5 file
         # Placeholder return until implementation is complete
@@ -42,9 +42,8 @@ class CoherentModeVisualizer(Visualizer):
         """Display the grid as an image when running in a GUI."""
         output = self.process(data)
 
-        # Use the MatplotlibEmbed helper for consistent embedding
         try:
-            from ..gui_helpers import MatplotlibEmbed
+            from ..gui_helpers import create_matplotlib_figure
             import tkinter as tk
         except Exception:
             return output
@@ -56,10 +55,8 @@ class CoherentModeVisualizer(Visualizer):
         win = tk.Toplevel()
         win.title(self.name)
 
-        # Create a frame to hold the plot
         frame = tk.Frame(win)
         frame.pack(fill='both', expand=True)
 
-        emb = MatplotlibEmbed(parent=frame, figsize=(4, 4))
-        emb.create_figure(draw)
+        create_matplotlib_figure(parent=frame, figsize=(4, 4), draw_fn=draw)
         return True

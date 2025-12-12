@@ -33,16 +33,10 @@ class Visualizer:
 
         This method supports optional remote execution when a `server`
         dict with an active SSH connection (`_conn`) and `remote_cmd` is
-        attached to the visualizer instance. Otherwise it calls
-        `local_process` implemented by subclasses.
+        attached to the visualizer instance.
+        
+        TODO: Review remote execution implementation for security and error handling.
         """
-        # If a server connection is attached to the instance, try to request
-        # Attempt SSH-based remote execution if a server dict with an
-        # active connection is attached. Callers may set `server` to a
-        # dict containing an active connection under the `_conn` key and
-        # a `remote_cmd` template string. The template may include
-        # `{name}` and `{params}` which will be filled with the visualizer
-        # name and JSON-encoded params respectively.
         server = getattr(self, 'server', None)
         if isinstance(server, dict):
             conn = server.get('_conn')
@@ -58,9 +52,7 @@ class Visualizer:
                         try:
                             return json.loads(out)
                         except Exception:
-                            # if remote command printed raw data, return stdout
                             return out
-                    # on failure fall back to local
                 except Exception:
                     pass
 
@@ -79,10 +71,10 @@ class Visualizer:
         """Present the visualization in a UI.
 
         Subclasses should implement `view(data)` for UI-specific behaviour.
-        The GUI will only pass the parameter dictionary to visualizers and
-        visualizers are responsible for creating windows or returning processed
-        data. When called in non-GUI contexts visualizers may return processed
-        data.
+        Visualizers are responsible for creating windows or returning processed
+        data when called in non-GUI contexts.
+        
+        TODO: Consider standardizing the return value contract for headless vs GUI usage.
         """
         raise NotImplementedError()
 

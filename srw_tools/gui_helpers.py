@@ -1,19 +1,17 @@
 """Helpers for embedding visualizations using Matplotlib.
 
-This module provides a matplotlib embed helper for embedding plots
-into tkinter windows. It falls back to simple in-memory representations
-for headless tests when matplotlib is unavailable.
+This module provides matplotlib embedding functions for plots in tkinter windows.
+Falls back to simple in-memory representations for headless tests when matplotlib
+is unavailable.
+
+TODO: Consider extracting _DummyAx to a test utilities module if it grows.
 """
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Dict, Tuple
 
 
 class _DummyAx:
     """Lightweight adapter that records plotting calls when matplotlib is
-    unavailable. This keeps tests lightweight and avoids hard dependency
-    on matplotlib in CI.
-
-    The adapter provides a minimal `plot`, `set_title` and `imshow`
-    interface used by existing visualizers.
+    unavailable. Keeps tests lightweight without matplotlib dependency.
     """
 
     def __init__(self):
@@ -31,87 +29,74 @@ class _DummyAx:
         self._images.append(grid)
 
 
-class MatplotlibEmbed:
-    """Embedder that uses matplotlib if available, otherwise provides
-    a headless adapter for tests.
+def create_matplotlib_figure(parent: Optional[Any] = None, figsize: Tuple[int, int] = (5, 3),
+                             draw_fn: Optional[Callable] = None) -> Dict[str, Any]:
+    """Create a matplotlib figure and optionally embed it in a tkinter parent.
 
-    The `create_figure(draw_fn)` method will call draw_fn(ax) where `ax`
-    is either a matplotlib axes object or a `_DummyAx` for headless operation.
+    Args:
+        parent: Optional tkinter parent widget to embed the figure in
+        figsize: Tuple of (width, height) for the figure
+        draw_fn: Optional function to call with the axes for drawing
+
+    Returns:
+        Dict with keys: 'figure', 'canvas', 'toolbar' (canvas/toolbar are None if no parent)
+
+    TODO: Review toolbar initialization and error handling for different backends.
     """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_tkagg import (
+            FigureCanvasTkAgg,
+            NavigationToolbar2Tk,
+        )
 
-    def __init__(self, parent: Optional[Any] = None, figsize=(5, 3)):
-        self.parent = parent
-        self.figsize = figsize
-        self.figure = None
-        self.canvas = None
-        self.toolbar = None
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        if draw_fn is not None:
+            draw_fn(ax)
+        
+        canvas = None
+        toolbar = None
+        
+        if parent is not None:
+            canvas = FigureCanvasTkAgg(fig, master=parent)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill='both', expand=True)
+            try:
+                toolbar = NavigationToolbar2Tk(canvas, parent)
+                toolbar.update()
+                toolbar.pack(side='top', fill='x')
+            except Exception:
+                toolbar = None
+        
+        return {'figure': fig, 'canvas': canvas, 'toolbar': toolbar}
+    except Exception:
+        ax = _DummyAx()
+        if draw_fn is not None:
+            draw_fn(ax)
+        
+        class _Fig:
+            def __init__(self, ax):
+                self.axes = [ax]
 
-    def create_figure(self, draw_fn: Optional[Callable] = None):
-        """Create a matplotlib figure and pass the axes to draw_fn.
+        fig = _Fig(ax)
+        return {'figure': fig, 'canvas': None, 'toolbar': None}
 
-        If matplotlib is not installed this will fall back to a dummy adapter
-        so tests can assert behaviour without heavy plotting deps.
-        """
+
+def clear_matplotlib_figure(canvas, toolbar):
+    """Clear matplotlib figure resources.
+
+    Args:
+        canvas: The FigureCanvasTkAgg instance to destroy
+        toolbar: The NavigationToolbar2Tk instance to destroy
+    """
+    if canvas is not None:
         try:
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_tkagg import (
-                FigureCanvasTkAgg,
-                NavigationToolbar2Tk,
-            )
-
-            fig, ax = plt.subplots(figsize=self.figsize)
-            
-            if draw_fn is not None:
-                draw_fn(ax)
-
-            self.figure = fig
-            
-            # Embed into tkinter if parent is provided
-            if self.parent is not None:
-                canvas = FigureCanvasTkAgg(fig, master=self.parent)
-                canvas.draw()
-                canvas.get_tk_widget().pack(fill='both', expand=True)
-                # Add a navigation toolbar for interactive plotting
-                try:
-                    toolbar = NavigationToolbar2Tk(canvas, self.parent)
-                    # Ensure the toolbar initializes its state
-                    toolbar.update()
-                    # pack the toolbar above the canvas
-                    toolbar.pack(side='top', fill='x')
-                    self.toolbar = toolbar
-                except Exception:
-                    # If backend doesn't support toolbar or the environment
-                    # is headless, skip adding toolbar.
-                    self.toolbar = None
-                self.canvas = canvas
-            
-            return fig
+            canvas.get_tk_widget().destroy()
         except Exception:
-            # fallback: headless dummy adapter + simple figure-like object
-            ax = _DummyAx()
-            if draw_fn is not None:
-                draw_fn(ax)
-            # create a minimal figure-like object for tests
-            class _Fig:
-                def __init__(self, ax):
-                    self.axes = [ax]
-
-            fig = _Fig(ax)
-            self.figure = fig
-            return fig
-
-    def clear(self):
-        """Clear any internal figure references."""
-        if self.canvas is not None:
-            try:
-                self.canvas.get_tk_widget().destroy()
-            except Exception:
-                pass
-            self.canvas = None
-        if self.toolbar is not None:
-            try:
-                self.toolbar.destroy()
-            except Exception:
-                pass
-            self.toolbar = None
-        self.figure = None
+            pass
+    if toolbar is not None:
+        try:
+            toolbar.destroy()
+        except Exception:
+            pass

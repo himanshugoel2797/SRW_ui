@@ -1,116 +1,103 @@
 """Helpers for discovering simulation scripts on disk.
 
-This module extracts the simulation discovery logic previously embedded
-in `gui.py` so other parts of the project can reuse it without importing
-tkinter or GUI code.
+Provides functions for finding and loading simulation scripts with
+optional caching and filesystem watching capabilities.
 """
 from pathlib import Path
 import ast
 import importlib.util
 import sys
 import uuid
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Callable, Tuple
 import tempfile
 
-# watchdog is a mandatory dependency for efficient filesystem watches
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-class SimulationScriptManager:
-    """Singleton manager for discovering simulation scripts on disk.
 
-    The manager provides a simple interface: list_simulation_scripts(base_dir)
-    and maintains an optional in-memory cache keyed by base_dir to avoid
-    repeated disk scans when desirable. Using a manager object makes it
-    easier to extend with additional behaviours later (caching, refresh,
-    background scanning, etc.) while preserving the stateless module-level
-    function for backwards compatibility.
+# Module-level cache and watches
+_cache: Dict[Tuple[Optional[str], str], Dict[str, str]] = {}
+_watches: Dict[Optional[str], Any] = {}
+
+
+class _WatchHandle:
+    """Internal handle for filesystem watches."""
+    def __init__(self, thread=None, stop_event=None, observer=None, use_observer=False):
+        self.thread = thread
+        self.stop_event = stop_event
+        self.observer = observer
+        self.use_observer = use_observer
+class _WatchHandle:
+    """Internal handle for filesystem watches."""
+    def __init__(self, thread=None, stop_event=None, observer=None, use_observer=False):
+        self.thread = thread
+        self.stop_event = stop_event
+        self.observer = observer
+        self.use_observer = use_observer
+
+
+def list_simulation_scripts(base_dir: Optional[str] = None, use_cache: bool = True, 
+                            key_by: str = 'path') -> Dict[str, str]:
+    """Discover simulation scripts under base_dir.
+
+    Returns a dict mapping script path -> display name (or name -> path if key_by='name').
+
+    Args:
+        base_dir: Directory to scan for scripts (defaults to current directory)
+        use_cache: Whether to use cached results
+        key_by: 'path' for path->name mapping, 'name' for name->path mapping
+
+    Returns:
+        Dict mapping paths to names or names to paths depending on key_by
     """
+    cache_key = (base_dir or None, key_by)
+    if use_cache and cache_key in _cache:
+        return _cache[cache_key]
 
-    def __init__(self):
-        # cache maps base_dir (string or None) -> results dict
-        self._cache: Dict[Optional[str], Dict[str, str]] = {}
-        # watches map base_dir -> _WatchHandle
-        self._watches: Dict[Optional[str], _WatchHandle] = {}
+    base = Path(base_dir or '.')
+    results: Dict[str, str] = {}
 
-    def list_simulation_scripts(self, base_dir: Optional[str] = None, use_cache: bool = True, key_by: str = 'path') -> Dict[str, str]:
-        """Discover simulation scripts under base_dir.
+    for p in base.rglob('*.py'):
+        try:
+            info = load_script(str(p))
+        except Exception:
+            continue
 
-        Returns a dict mapping script `path` -> display `name`.
+        if not info.get('set_optics'):
+            continue
 
-        The `key_by` parameter controls which mapping is returned: by
-        default (`key_by='path'`) a mapping of path->name is returned.
-        If `key_by='name'` the mapping `name->path` is returned instead.
+        name_val = None
+        mod = info.get('module')
+        if mod is not None and hasattr(mod, 'varParam') and mod.varParam:
+            for vp in mod.varParam:
+                if vp[0] == 'name' and len(vp) >= 2:
+                    name_val = str(vp[2])
+                    break
 
-        If use_cache is True, results for the same base_dir may be returned
-        from a simple in-memory cache. Use clear_cache() to invalidate.
-        """
-        cache_key = (base_dir or None, key_by)
-        if use_cache and cache_key in self._cache:
-            return self._cache[cache_key]
+        if not name_val:
+            name_val = p.stem
 
-        base = Path(base_dir or '.')
-        results: Dict[str, str] = {}
+        try:
+            results[str(p.resolve())] = str(name_val)
+        except Exception:
+            results[str(p)] = str(name_val)
 
-        for p in base.rglob('*.py'):
-            # Use the module loader to import the script and extract the
-            # readable name and set_optics function. We accept executing
-            # the script module because scripts are user-provided and need
-            # to be able to run code to set up their configuration.
-            try:
-                info = self.load_script(str(p))
-            except Exception:
-                continue
+    final_results = results
+    if key_by == 'name':
+        inv = {}
+        for pth, name in results.items():
+            if name not in inv:
+                inv[name] = pth
+        final_results = inv
 
-            # Skip scripts that don't expose a set_optics function
-            if not info.get('set_optics'):
-                continue
+    _cache[cache_key] = final_results
+    return final_results
 
-            name_val = None
-            mod = info.get('module')
-            if mod is not None and hasattr(mod, 'varParam') and mod.varParam:
-                for vp in mod.varParam:
-                    if vp[0] == 'name' and len(vp) >= 2:
-                        name_val = str(vp[2])
-                        break
 
-            if not name_val:
-                name_val = p.stem
-
-            try:
-                results[str(p.resolve())] = str(name_val)
-            except Exception:
-                results[str(p)] = str(name_val)
-
-        # If caller wants name->path mapping, invert the dict.
-        final_results = results
-        if key_by == 'name':
-            inv = {}
-            for pth, name in results.items():
-                # prefer first occurrence when names conflict
-                if name not in inv:
-                    inv[name] = pth
-            final_results = inv
-
-        # store cache keyed by base_dir and key_by
-        self._cache[cache_key] = final_results
-        return final_results
-
-    def load_script(self, path: str):
+def load_script(path: str) -> Dict[str, Any]:
         """Load a simulation script and return info about it.
 
-        The returned dictionary contains:
-        - 'path': resolved path to the script
-        - 'varParam': value parsed from the script if available (list), or None
-        - 'set_optics': callable function object if present (imported module), or None
-        - 'module': the imported module object (or None)
-
-        We will try to extract `varParam` safely via AST literal parsing to
-        avoid executing arbitrary script code. If `varParam` cannot be
-        extracted as a literal, we fall back to importing the module to
-        retrieve the runtime value. To obtain a callable handle for
-        `set_optics` we import the module in a dedicated namespace and
-        return the reference.
+        Returns dict with keys: path, varParam, set_optics, module
         """
         p = Path(path)
         if not p.exists():
@@ -118,25 +105,14 @@ class SimulationScriptManager:
 
         info = {'path': str(p.resolve()), 'varParam': None, 'set_optics': None, 'module': None}
 
-        # Import module to get set_optics and varParam. We sanitize the
-        # script before executing to remove any top-level calls to
-        # `main()` or `epilogue()` as well as `if __name__ == '__main__'`
-        # blocks that would invoke them. This reduces accidental
-        # side-effects at import time while still executing module-level
-        # initialization that the script intentionally performs.
-        # Create a unique module name to avoid clobbering sys.modules
         module_name = f"_srw_script_{uuid.uuid4().hex}"
         try:
-            # Read file text
             try:
                 src_text = p.read_text(encoding='utf-8')
             except Exception:
                 src_text = None
 
-            # Sanitize code via AST: remove top-level calls to `main()` and
-            # `epilogue()` as well as if __name__ == '__main__' blocks.
             def _is_main_if(node: ast.If) -> bool:
-                # Check for: if __name__ == '__main__':
                 try:
                     if isinstance(node.test, ast.Compare):
                         # Check for patterns like: __name__ == '__main__' OR
@@ -260,132 +236,114 @@ class SimulationScriptManager:
 
         return info
 
-    def get_varParam(self, path: str):
-        """Return the varParam list for a given script path if available.
 
-        This will import the module and return its `varParam`/`varParam`
-        attribute. If not present, returns None.
-        """
-        info = self.load_script(path)
-        return info.get('varParam')
+def get_varParam(path: str) -> Optional[Any]:
+    """Return the varParam list for a given script path if available."""
+    info = load_script(path)
+    return info.get('varParam')
 
-    def get_set_optics(self, path: str):
-        """Return a callable handle to the script's `set_optics` function.
 
-        If the function is not present, returns None.
-        """
-        info = self.load_script(path)
-        return info.get('set_optics')
+def get_set_optics(path: str) -> Optional[Callable]:
+    """Return a callable handle to the script's set_optics function."""
+    info = load_script(path)
+    return info.get('set_optics')
 
-    def clear_cache(self, base_dir: Optional[str] = None):
-        """Clear the cache for base_dir (or all if None)."""
-        if base_dir is None:
-            self._cache.clear()
+
+def clear_cache(base_dir: Optional[str] = None):
+    """Clear the cache for base_dir (or all if None)."""
+    global _cache
+    if base_dir is None:
+        _cache.clear()
+    else:
+        keys_to_remove = [k for k in _cache.keys() if k[0] == base_dir]
+        for key in keys_to_remove:
+            _cache.pop(key, None)
+
+
+def add_watch(base_dir: Optional[str], callback: Callable, interval: float = 0.5):
+    """Start watching base_dir for changes and call callback(new_results).
+
+    The watcher runs in a background daemon thread and invokes callback
+    whenever the discovered set of scripts changes.
+    """
+    key = base_dir or None
+
+    if key in _watches:
+        remove_watch(key)
+
+    class _Handler(FileSystemEventHandler):
+        def __init__(self, base_key, cb):
+            super().__init__()
+            self.base_key = base_key
+            self.cb = cb
+
+        def _maybe_notify(self):
+            try:
+                curr = list_simulation_scripts(self.base_key, use_cache=False)
+            except Exception:
+                curr = {}
+            cache_key = (self.base_key, 'path')
+            prev = _cache.get(cache_key)
+            if curr != prev:
+                _cache[cache_key] = curr
+                try:
+                    self.cb(curr)
+                except Exception:
+                    pass
+
+        def on_created(self, event):
+            if event.src_path.endswith('.py'):
+                self._maybe_notify()
+
+        def on_modified(self, event):
+            if event.src_path.endswith('.py'):
+                self._maybe_notify()
+
+        def on_deleted(self, event):
+            if event.src_path.endswith('.py'):
+                self._maybe_notify()
+
+    base_path = str(Path(key or '.'))
+    handler = _Handler(key, callback)
+    observer = Observer()
+    observer.schedule(handler, base_path, recursive=True)
+    observer.daemon = True
+    observer.start()
+
+    _watches[key] = _WatchHandle(observer=observer, use_observer=True)
+
+
+def remove_watch(base_dir: Optional[str]):
+    """Stop watching base_dir if a watcher exists."""
+    key = base_dir or None
+    h = _watches.pop(key, None)
+    if h is not None:
+        if h.use_observer and h.observer is not None:
+            try:
+                h.observer.stop()
+            except Exception:
+                pass
+            try:
+                h.observer.join(timeout=1.0)
+            except Exception:
+                pass
         else:
-            # Remove all cache entries for this base_dir (with any key_by value)
-            keys_to_remove = [k for k in self._cache.keys() if k[0] == base_dir]
-            for key in keys_to_remove:
-                self._cache.pop(key, None)
-
-    def add_watch(self, base_dir: Optional[str], callback, interval: float = 0.5):
-        """Start watching base_dir for changes and call callback(new_results)
-
-        The watcher runs in a background daemon thread and invokes callback
-        whenever the discovered set of scripts changes. If a watch for the
-        same base_dir already exists it is replaced.
-        """
-        # normalize key
-        key = base_dir or None
-
-        # if there's already a watch, remove it first
-        if key in self._watches:
-            self.remove_watch(key)
-
-        # Use watchdog observers for efficient filesystem events (required)
-        class _Handler(FileSystemEventHandler):
-            def __init__(self, manager: 'SimulationScriptManager', base_key, cb):
-                super().__init__()
-                self.manager = manager
-                self.base_key = base_key
-                self.cb = cb
-
-            def _maybe_notify(self):
+            if h.stop_event is not None:
+                h.stop_event.set()
+            if h.thread is not None:
                 try:
-                    curr = self.manager.list_simulation_scripts(self.base_key, use_cache=False)
-                except Exception:
-                    curr = {}
-                cache_key = (self.base_key, 'path')
-                prev = self.manager._cache.get(cache_key)
-                if curr != prev:
-                    self.manager._cache[cache_key] = curr
-                    try:
-                        self.cb(curr)
-                    except Exception:
-                        pass
-
-            def on_created(self, event):
-                if event.src_path.endswith('.py'):
-                    self._maybe_notify()
-
-            def on_modified(self, event):
-                if event.src_path.endswith('.py'):
-                    self._maybe_notify()
-
-            def on_deleted(self, event):
-                if event.src_path.endswith('.py'):
-                    self._maybe_notify()
-
-        # start observer
-        base_path = str(Path(key or '.'))
-        handler = _Handler(self, key, callback)
-        observer = Observer()
-        observer.schedule(handler, base_path, recursive=True)
-        observer.daemon = True
-        observer.start()
-
-        self._watches[key] = _WatchHandle(observer=observer, use_observer=True)
-
-    def remove_watch(self, base_dir: Optional[str]):
-        """Stop watching base_dir if a watcher exists."""
-        key = base_dir or None
-        h = self._watches.pop(key, None)
-        if h is not None:
-            if h.use_observer and h.observer is not None:
-                try:
-                    h.observer.stop()
+                    h.thread.join(timeout=1.0)
                 except Exception:
                     pass
-                try:
-                    h.observer.join(timeout=1.0)
-                except Exception:
-                    pass
-            else:
-                # polling thread
-                if h.stop_event is not None:
-                    h.stop_event.set()
-                if h.thread is not None:
-                    try:
-                        h.thread.join(timeout=1.0)
-                    except Exception:
-                        pass
-
-    def list_watches(self):
-        """Return a list of currently watched base_dir keys."""
-        return list(self._watches.keys())
-
-    def stop_all_watches(self):
-        """Stop all active watchers and clear internal watch registry."""
-        keys = list(self._watches.keys())
-        for k in keys:
-            self.remove_watch(k)
 
 
-# singleton instance used by callers
-script_manager = SimulationScriptManager()
+def list_watches():
+    """Return a list of currently watched base_dir keys."""
+    return list(_watches.keys())
 
-class _WatchHandle:
-    def __init__(self, thread=None, stop_event=None, observer=None, use_observer=False):
-        self.thread = thread
-        self.stop_event = stop_event
-        self.observer = observer
-        self.use_observer = use_observer
+
+def stop_all_watches():
+    """Stop all active watchers and clear internal watch registry."""
+    keys = list(_watches.keys())
+    for k in keys:
+        remove_watch(k)

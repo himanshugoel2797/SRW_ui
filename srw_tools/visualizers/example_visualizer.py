@@ -25,9 +25,8 @@ class SquareVisualizer(Visualizer):
         """Display the grid as an image when running in a GUI, otherwise return data."""
         output = self.process(data)
 
-        # Use the MatplotlibEmbed helper for consistent embedding
         try:
-            from ..gui_helpers import MatplotlibEmbed
+            from ..gui_helpers import create_matplotlib_figure
         except Exception:
             return output
 
@@ -38,10 +37,8 @@ class SquareVisualizer(Visualizer):
         win = tk.Toplevel()
         win.title(self.name)
 
-        # Create a frame to hold the plot
         frame = tk.Frame(win)
         frame.pack(fill='both', expand=True)
 
-        emb = MatplotlibEmbed(parent=frame, figsize=(4, 4))
-        emb.create_figure(draw)
+        create_matplotlib_figure(parent=frame, figsize=(4, 4), draw_fn=draw)
         return True

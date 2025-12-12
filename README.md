@@ -25,7 +25,7 @@ Main pieces
   ```
 - `srw_tools.visualizer` — base class and registry for visualizer scripts
 - `srw_tools/visualizers/` — drop-in directory for your custom visualizers
- - `srw_tools.visualizers/simulation_data_manager` — a visualizer for managing simulation directories. It now by default filters to folders that contain a simulation script (detected via `srw_tools.simulation_scripts.script_manager`).
+ - `srw_tools.visualizers/simulation_data_manager` — a visualizer for managing simulation directories. It now by default filters to folders that contain a simulation script (detected via `srw_tools.simulation_scripts` module).
  
 CLI
 - `srw_tools annex` — git-annex convenience commands available on the CLI (also available as a nested `git annex`). Use:
