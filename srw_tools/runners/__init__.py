@@ -1,18 +1,14 @@
-"""Auto-loader for visualizer modules
+"""Base Runner class for command execution backends.
 
-Any python module placed under this package will be imported when the
-package is imported, which triggers visualizer registration via
-the `srw_tools.visualizer.register_visualizer` decorator.
-
-This is written to be robust: module import errors are caught so a
-broken optional visualizer won't prevent the package from loading.
+This package contains different runner implementations for executing
+shell commands and file operations in various environments.
 """
 from importlib import import_module
 from pathlib import Path
 import pkgutil
 
-# Import every visualizer module in this package so that they register
-# themselves with the visualizer registry on import.
+# Import every runner module in this package so that their classes
+# register themselves with the central runner registry on import.
 _this_dir = Path(__file__).parent
 
 for finder, name, ispkg in pkgutil.iter_modules([str(_this_dir)]):

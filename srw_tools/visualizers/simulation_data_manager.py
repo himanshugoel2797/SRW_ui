@@ -1,13 +1,11 @@
 """Simulation Data Manager visualizer
 
-Provides a GUI for managing simulation data directories: list, create, fork,
-delete folders, export/import zip archives, and commit backups using git.
+Provides a GUI for managing simulation data directories: list, create, fork, delete folders, export/import zip archives, and create archive backups.
 """
 from __future__ import annotations
 
 from ..visualizer import Visualizer, register_visualizer
 from .. import simulation_scripts
-from ..git_helper import stage_files_with_annex, annex_available, commit, _run_git
 from ..folder_utils import list_folders, format_folder_display
 
 from pathlib import Path
@@ -15,15 +13,9 @@ from typing import Optional, Dict, Any
 import shutil
 import zipfile
 import threading
+import datetime
 
 
-def _is_git_lfs_available(cwd: Optional[str] = None) -> bool:
-    """Check if git-lfs is available in the system."""
-    try:
-        rc, out, err = _run_git(["lfs", "version"], cwd=cwd)
-        return rc == 0
-    except Exception:
-        return False
 
 
 @register_visualizer
@@ -223,28 +215,17 @@ class SimulationDataManager(Visualizer):
                 if not files:
                     messagebox.showinfo('Backup', 'Nothing to backup')
                     return
-                
-                rc, out, err = _run_git(["rev-parse", "--show-toplevel"], cwd=str(root_dir))
-                workdir = str(root_dir)
-                if rc == 0 and out:
-                    workdir = out.strip()
-                
-                ok = stage_files_with_annex(files, path=workdir)
-                if not ok:
-                    messagebox.showerror('Backup', 'git add failed')
+
+                try:
+                    backup_root = root_dir / 'backups'
+                    backup_root.mkdir(parents=True, exist_ok=True)
+                    timestamp = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+                    archive_base = backup_root / f"{name}_backup_{timestamp}"
+                    shutil.make_archive(str(archive_base), 'zip', folder)
+                    _update_status(f'Backup saved: {archive_base.name}.zip')
+                except Exception as e:
+                    messagebox.showerror('Backup error', str(e))
                     return
-                
-                ok = commit(f'Backup simulation data: {name}', path=workdir)
-                if not ok:
-                    messagebox.showerror('Backup', 'git commit failed')
-                    return
-                
-                if annex_available(path=workdir):
-                    _update_status('Backup committed (annex)')
-                elif _is_git_lfs_available(cwd=workdir):
-                    _update_status('Backup committed (LFS)')
-                else:
-                    _update_status('Backup committed')
             except Exception as e:
                 messagebox.showerror('Backup error', str(e))
 
@@ -260,7 +241,7 @@ class SimulationDataManager(Visualizer):
         btn_import.pack(pady=(2, 2))
         btn_refresh = tk.Button(right, text='Refresh', width=18, command=_refresh)
         btn_refresh.pack(pady=(2, 2))
-        btn_backup = tk.Button(right, text='Backup (git)', width=18, command=_backup)
+        btn_backup = tk.Button(right, text='Backup (zip)', width=18, command=_backup)
         btn_backup.pack(pady=(2, 2))
 
         lb.focus_set()

@@ -23,39 +23,27 @@ class Visualizer:
 
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
+        self.runner = None
 
     # Visualizers should implement `local_process` for data processing
-    # and `view` for UI behaviour. The public `process` method handles
-    # optional remote execution and then calls the local implementation.
+    # and `view` for UI behaviour. Visualizers can use self.runner to
+    # execute commands and perform file operations.
+
+    def supports_runners(self) -> bool:
+        """Return True if this visualizer supports runner selection.
+        
+        Visualizers that return True will be provided with a runner instance
+        when invoked from the GUI, allowing them to execute commands and
+        perform file operations via the runner.
+        """
+        return False
 
     def process(self, data=None):
         """Process or generate visualization data.
 
-        This method supports optional remote execution when a `server`
-        dict with an active SSH connection (`_conn`) and `remote_cmd` is
-        attached to the visualizer instance.
-        
-        TODO: Review remote execution implementation for security and error handling.
+        Subclasses can override this or implement local_process for local
+        execution logic.
         """
-        server = getattr(self, 'server', None)
-        if isinstance(server, dict):
-            conn = server.get('_conn')
-            remote_cmd = server.get('remote_cmd')
-            if conn and remote_cmd:
-                try:
-                    import json
-                    from .ssh_helper import run_command
-                    payload = json.dumps(data or {})
-                    cmd = remote_cmd.format(name=self.name, params=payload)
-                    status, out, err = run_command(conn, cmd)
-                    if status == 0:
-                        try:
-                            return json.loads(out)
-                        except Exception:
-                            return out
-                except Exception:
-                    pass
-
         return self.local_process(data)
 
     def local_process(self, data=None):
